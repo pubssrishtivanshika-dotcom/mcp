@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Authorize Publive — MCP{% endblock %}
+
+{% block content %}
+  {% include "_card_header.html" %}
+
+  <h1>Authorize access</h1>
+  <p class="subtitle">Enter your Publive credentials to grant access via the CDS API.</p>
+
+  <div class="error-box{% if not error %} hidden{% endif %}" id="errorBox">
+    <span>⚠</span>
+    <span>{% if error %}{{ error }}{% endif %}</span>
+  </div>
+
+  <form method="post" id="authorizeForm">
+    {% csrf_token %}
+    <input type="hidden" name="client_id"             value="{{ client_id }}" />
+    <input type="hidden" name="redirect_uri"          value="{{ redirect_uri }}" />
+    <input type="hidden" name="state"                 value="{{ state }}" />
+    <input type="hidden" name="code_challenge"        value="{{ code_challenge }}" />
+    <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}" />
+
+    <div class="field">
+      <label for="publisherId">Publisher ID</label>
+      <input type="text" id="publisherId" name="publisherId"
+             placeholder="e.g. 1234" autocomplete="off" value="{{ publisherId }}" />
+      <div class="hint">Your numeric publisher identifier</div>
+    </div>
+
+    <div class="field">
+      <label for="apiKey">API Key</label>
+      <input type="text" id="apiKey" name="apiKey"
+             placeholder="Your API Key" autocomplete="off" value="{{ apiKey }}" />
+    </div>
+
+    <div class="field">
+      <label for="apiSecret">API Secret</label>
+      <div class="password-wrap">
+        <input type="password" id="apiSecret" name="apiSecret"
+               placeholder="Your API Secret" autocomplete="off" />
+        <button class="toggle-eye" id="toggleSecret" type="button" title="Show/hide">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="btn" id="authorizeBtn" type="submit">
+      <div class="btn-inner">
+        <div class="spinner" id="spinner"></div>
+        <span id="btnText">Authorize</span>
+      </div>
+    </button>
+  </form>
+
+  <hr class="divider" />
+
+  <p class="footer-note">
+    Credentials are stored in your session only and never saved to disk.<br />
+    <a href="https://thepublive.com/contact-us" target="_blank">Need help? Contact Publive →</a>
+  </p>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/toggle-secret.js' %}"></script>
+<script src="{% static 'js/authorize.js' %}"></script>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Connect Publive — MCP{% endblock %}
+
+{% block content %}
+  {% include "_card_header.html" %}
+
+  <h1>Connect your account</h1>
+  <p class="subtitle">Enter your Publive credentials to give Claude access to your content via the CDS API.</p>
+
+  <div class="error-box hidden" id="errorBox">
+    <span>⚠</span>
+    <span id="errorText"></span>
+  </div>
+
+  <div class="field">
+    <label for="publisherId">Publisher ID</label>
+    <input type="text" id="publisherId" placeholder="e.g. 1234" autocomplete="off" />
+    <div class="hint">Your numeric publisher identifier</div>
+  </div>
+
+  <div class="field">
+    <label for="apiKey">API Key</label>
+    <input type="text" id="apiKey" placeholder="Your API Key" autocomplete="off" />
+  </div>
+
+  <div class="field">
+    <label for="apiSecret">API Secret</label>
+    <div class="password-wrap">
+      <input type="password" id="apiSecret" placeholder="Your API Secret" autocomplete="off" />
+      <button class="toggle-eye" id="toggleSecret" type="button" title="Show/hide">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+          <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <button class="btn" id="connectBtn" onclick="handleConnect()">
+    <div class="btn-inner">
+      <div class="spinner" id="spinner"></div>
+      <span id="btnText">Connect to Claude</span>
+    </div>
+  </button>
+
+  <hr class="divider" />
+
+  <p class="footer-note">
+    You'll stay connected until you disconnect.<br />
+    <a href="https://thepublive.com/contact-us" target="_blank">Need help? Contact Publive →</a>
+  </p>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/toggle-secret.js' %}"></script>
+<script src="{% static 'js/connect.js' %}"></script>
+{% endblock %}

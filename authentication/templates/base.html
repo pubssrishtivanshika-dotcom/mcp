@@ -1,0 +1,42 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Publive MCP{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{% static 'css/base.css' %}" />
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="https://thepublive.com" class="nav-logo">
+      <svg class="nav-logo-icon" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="28" height="28" rx="6" fill="#111827"/>
+        <circle cx="14" cy="14" r="5" stroke="white" stroke-width="2"/>
+        <circle cx="14" cy="14" r="2" fill="white"/>
+        <line x1="14" y1="6"  x2="14" y2="3"  stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="14" y1="22" x2="14" y2="25" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="6"  y1="14" x2="3"  y2="14" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="22" y1="14" x2="25" y2="14" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span class="nav-logo-text">publive</span>
+    </a>
+    <div class="nav-spacer"></div>
+    <a href="https://thepublive.com/contact-us" class="nav-link">Support</a>
+    <a href="https://app.thepublive.com" class="nav-btn">Dashboard →</a>
+  </nav>
+
+  <div class="page-body">
+    <div class="card {% block card_class %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+
+  {% block extra_js %}{% endblock %}
+
+</body>
+</html>

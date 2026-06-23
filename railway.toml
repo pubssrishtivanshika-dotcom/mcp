@@ -1,0 +1,16 @@
+# Per-environment config is driven by the dotenv profile selected via ENV_FILE.
+# The Docker image defaults ENV_FILE=prod.env; in each Railway environment's
+# Variables, set ENV_FILE to the matching profile:
+#   production environment → ENV_FILE=prod.env
+#   beta / staging         → ENV_FILE=beta.env
+# Real secrets (DJANGO_SECRET_KEY, CREDENTIALS_ENCRYPTION_KEYS, DATABASE_URL) are set
+# as Railway variables and take precedence over the committed profile placeholders.
+
+[build]
+builder = "dockerfile"
+
+[deploy]
+
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"

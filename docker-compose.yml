@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: publive_mcp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_SETTINGS_MODULE: publive_mcp.settings
+      DJANGO_SECRET_KEY: local-dev-secret-change-me
+      # Fernet key(s) for encrypting Publive API credentials at rest. Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      CREDENTIALS_ENCRYPTION_KEYS: aD0Ym3l8Qe6m2sP9rTfxk1uZ7nC4wHvB5gJ0oLd8qE=
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/publive_mcp
+      BASE_URL: http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

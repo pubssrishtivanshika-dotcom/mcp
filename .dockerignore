@@ -1,0 +1,50 @@
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Local environment — keep developer-personal overrides out of the image, but the
+# tracked dev/beta/prod.env profiles MUST ship (they hold non-secret config; real
+# secrets are injected via Railway's dashboard at runtime).
+.env
+.env.local
+*.env.local
+
+# Local DB (never ship the SQLite dev file)
+db.sqlite3
+
+# Static files collected locally
+staticfiles/
+
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Test files (not needed in the production image)
+**/tests/
+**/test_*.py
+**/*_test.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+.claude/

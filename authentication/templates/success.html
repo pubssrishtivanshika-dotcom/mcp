@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Connected — Publive MCP{% endblock %}
+
+{% block card_class %}card--wide{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/success.css' %}" />
+{% endblock %}
+
+{% block content %}
+  <div class="success-ring">
+    <svg viewBox="0 0 54 54" xmlns="http://www.w3.org/2000/svg">
+      <circle class="circle-bg"    cx="27" cy="27" r="25"/>
+      <circle class="circle-track" cx="27" cy="27" r="25" transform="rotate(-90 27 27)"/>
+      <polyline class="checkmark"  points="16,27 23,34 38,19"/>
+    </svg>
+  </div>
+
+  <h1>You're connected!</h1>
+  <p class="subtitle">
+    Claude now has access to your Publive content.<br />
+    You can close this tab and return to Claude.
+  </p>
+
+  <div class="info-box">
+    <div class="info-row">
+      <span class="info-label">Status</span>
+      <span class="info-value green"><span class="status-dot"></span>Authenticated</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Publisher ID</span>
+      <span class="info-value" id="publisherIdDisplay">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Connected at</span>
+      <span class="info-value" id="connectedAt">—</span>
+    </div>
+  </div>
+
+  <div class="section-header">
+    <span class="section-label">Available tools</span>
+    <span class="section-count">18 tools</span>
+  </div>
+
+  <div class="tools-grid">
+    <div class="tool-chip">list_posts</div>
+    <div class="tool-chip">get_post</div>
+    <div class="tool-chip">get_post_by_url</div>
+    <div class="tool-chip">list_categories</div>
+    <div class="tool-chip">get_category</div>
+    <div class="tool-chip">list_tags</div>
+    <div class="tool-chip">get_tag</div>
+    <div class="tool-chip">list_authors</div>
+    <div class="tool-chip">get_author</div>
+    <div class="tool-chip">get_publisher_data</div>
+    <div class="tool-chip">identify_content</div>
+    <div class="tool-chip">get_live_blog_updates</div>
+    <div class="tool-chip">get_navbar</div>
+    <div class="tool-chip">get_footer</div>
+    <div class="tool-chip">get_active_slots</div>
+    <div class="tool-chip">get_newsletter_groups</div>
+    <div class="tool-chip">get_content_types</div>
+    <div class="tool-chip">get_form_schema</div>
+  </div>
+
+  <hr class="divider" />
+
+  <div class="actions">
+    <a href="https://claude.ai" class="btn-primary">Return to Claude →</a>
+    <button class="btn-ghost" onclick="logout()">Disconnect account</button>
+  </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/success.js' %}"></script>
+{% endblock %}
