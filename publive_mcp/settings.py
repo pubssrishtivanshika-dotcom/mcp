@@ -40,6 +40,11 @@ _allowed_hosts = [
 _railway_host = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
 if _railway_host:
     _allowed_hosts.append(_railway_host)
+# Railway probes the app via GET / with Host "healthcheck.railway.app" during
+# deploys; allow it so the healthcheck doesn't 400 (only matters when a real
+# allow-list is configured — the empty dev profile already falls back to "*").
+if _allowed_hosts:
+    _allowed_hosts.append("healthcheck.railway.app")
 ALLOWED_HOSTS = _allowed_hosts or ["*"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
