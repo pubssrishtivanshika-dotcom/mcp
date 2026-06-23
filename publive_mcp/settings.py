@@ -47,7 +47,7 @@ if _allowed_hosts:
     _allowed_hosts.append("healthcheck.railway.app")
 
 
-# ALLOWED_HOSTS = _allowed_hosts or ["*"]
+ALLOWED_HOSTS = _allowed_hosts or ["*"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
 
