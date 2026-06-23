@@ -203,13 +203,15 @@ class AuthService:
         """
         token: str = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
         t0: float = time.perf_counter()
-        # Validate against a documented, always-present CDS endpoint. `/posts/?limit=1`
-        # is the smallest authenticated GET that exists for every publisher.
-        # Use the same env-configurable base URL as the CDS client (CDS_BASE_URL).
+        # Validate against the publisher root — the smallest authenticated GET that
+        # exists for every publisher (returns 401 without valid Basic auth, 200 with).
+        # We previously probed `/posts/?limit=1`, but that endpoint now requires a
+        # `field__eq` filter expression on some publishers and 400s on a bare call,
+        # which is indistinguishable from bad credentials. The root has no such
+        # requirement. Use the same env-configurable base URL as the CDS client.
         base = settings.CDS_BASE_URL.format(publisher_id=publisher_id)
         resp = requests.get(
-            f"{base}/posts/",
-            params={"limit": 1},
+            f"{base}/",
             headers={"Authorization": f"Basic {token}"},
             timeout=10,
         )
