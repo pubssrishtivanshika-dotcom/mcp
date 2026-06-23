@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.staticfiles",
+    "corsheaders",
     "authentication",
     "mcp",
 ]
@@ -91,6 +92,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "mcp.middleware.RequestIDMiddleware",
     "mcp.middleware.SecurityHeadersMiddleware",
@@ -98,6 +100,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "publive_mcp.urls"
 
+CORS_ALLOWED_ORIGINS: list[str] = []
 
 # ### #
 TEMPLATES = [
