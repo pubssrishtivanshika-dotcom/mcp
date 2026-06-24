@@ -158,9 +158,10 @@ CSRF_TRUSTED_ORIGINS = list(
 
 # ── OAuth security ────────────────────────────────────────────────────────────
 # The CORS Origin allowlist is the single source of truth in the database
-# (authentication.AllowedOrigin). The table is seeded on first migration (authentication
-# migration 0003) and managed at runtime in the DB — add/remove clients there,
-# never in settings. See authentication.services.AuthService.get_allowed_origins.
+# (authentication.AllowedOrigin). The table is seeded by data migration
+# authentication 0002_seed_allowed_origins and managed at runtime in the DB —
+# add/remove clients there, never in settings. See
+# authentication.services.AuthService.get_allowed_origins.
 
 # Dynamic client registration (RFC 7591 / OAuth 2.1) is open to any client —
 # redirect_uri just has to be https:// or a loopback address. See

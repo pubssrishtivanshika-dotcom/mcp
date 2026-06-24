@@ -27,9 +27,7 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: publive_mcp.settings
       DJANGO_SECRET_KEY: local-dev-secret-change-me
-      # Fernet key(s) for encrypting Publive API credentials at rest. Generate with:
-      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      CREDENTIALS_ENCRYPTION_KEYS: aD0Ym3l8Qe6m2sP9rTfxk1uZ7nC4wHvB5gJ0oLd8qE=
+      CREDENTIALS_ENCRYPTION_KEYS: fernet-key
       DATABASE_URL: postgresql://postgres:postgres@db:5432/publive_mcp
       BASE_URL: http://localhost:8000
     depends_on:

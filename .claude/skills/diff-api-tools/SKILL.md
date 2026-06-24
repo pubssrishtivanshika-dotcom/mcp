@@ -36,8 +36,10 @@ domain file's `SCHEMAS` list directly. Build a map:
 tool_name → { file, description, inputSchema, handler_path }
 ```
 
-Where `handler_path` is the URL path string passed to `cds_get` / `cms_*`
-inside the handler function.
+Where `handler_path` is the URL path string passed to `cds_client.get` /
+`cms_client.*` (or the shared `self.list_resource(path=...)` / `self.get_resource(path_for=...)`
+/ `self.create_resource(path=...)` / `self.update_resource(path_for=...)` /
+`self.delete_resource(path_for=...)` helpers) inside the handler method.
 
 ## Step 2 — Inventory the documented endpoints
 
@@ -92,8 +94,10 @@ are the same shape — flag only if the structure differs.
 
 ### 4c — HTTP method drift
 
-If the handler calls `cms_post` but the doc says `PATCH` (or vice versa),
-flag it as a **method mismatch**.
+If the handler calls `cms_client.post` but the doc says `PATCH` (or vice
+versa), flag it as a **method mismatch**. Note that the `CmsToolModule`
+helpers imply a method: `create_resource` → POST, `update_resource` → PATCH,
+`delete_resource` → DELETE.
 
 ### 4d — Description drift
 
@@ -134,9 +138,10 @@ opportunistically clean up anything else):
 
 ### Adding / fixing a parameter in `inputSchema`
 
-Use Edit to add or update the property in the `properties` dict and update
-the `required` array if needed. Match the doc's type, description, and
-any constraints (enum, minimum, maximum, default).
+Use Edit to add or update the property in the `inputSchema` `properties`
+dict on the `@tool(...)` decorator and update the `required` array if
+needed. Match the doc's type, description, and any constraints (enum,
+minimum, maximum, default).
 
 ### Removing a stale parameter
 
@@ -146,26 +151,29 @@ API call, remove it there too.
 
 ### Fixing a handler path
 
-Edit only the URL string argument in the `cds_get` / `cms_*` call.
-Do not touch the surrounding logic.
+Edit only the URL string argument in the `cds_client.get` / `cms_client.*`
+call, or the `path=` / `path_for=` argument passed to the shared
+`list_resource` / `get_resource` / `create_resource` / `update_resource` /
+`delete_resource` helper. Do not touch the surrounding logic.
 
 ### Fixing an HTTP method
 
-Change `cms_post` → `cms_patch` (or whatever the doc says). Verify the
-dry_run tier is still correct for the new method (PATCH = tier 3 diff,
+Change `cms_client.post` → `cms_client.patch` (or whatever the doc says), or
+switch the shared helper (`create_resource` → `update_resource` etc.). Verify
+the dry_run tier is still correct for the new method (PATCH = tier 3 diff,
 POST = tier 2 preview).
 
 ### Fixing a description
 
-Replace only the `"description"` value in the SCHEMAS entry. Keep it
+Replace only the `description=` value in the `@tool(...)` decorator. Keep it
 within the description rules from [[add-tool]].
 
 ## Step 7 — Verify
 
 ```bash
-python manage.py test authentication.tests mcp.tests
+python manage.py check
 
-python -c "
+python manage.py shell -c "
 from mcp.cds import TOOLS, _HANDLER_REGISTRY as CDS
 from mcp.cms import CMS_TOOLS, _HANDLER_REGISTRY as CMS
 all_ok = all(t['name'] in CDS for t in TOOLS) and all(t['name'] in CMS for t in CMS_TOOLS)

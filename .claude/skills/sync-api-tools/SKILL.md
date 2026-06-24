@@ -59,7 +59,7 @@ individual domain files' `SCHEMAS` lists.
 For each documented endpoint, decide whether an existing tool already covers
 it. Use the naming conventions from [[add-tool]] (`fetch_*` / `resolve_*` for
 CDS reads, `list_editorial_*` / `get_editorial_*` / `create_*` / `update_*` /
-`delete_*` / `validate_*` / `submit_*` for CMS) — a doc page like
+`delete_*` / `validate_*` for CMS) — a doc page like
 `reader/login.mdx` maps conceptually to a tool like `login_reader`, even if
 the exact name differs slightly. Read the handler body to confirm it calls the
 matching path before concluding "covered".
@@ -111,11 +111,11 @@ they pick none, stop here and just leave the report.
 
 For each endpoint the user selected, follow [[add-tool]] step by step:
 
-1. Pick the right domain file (existing domain if it fits, new `mcp/cms/<domain>.py` otherwise)
-2. Add the `SCHEMAS` entry (name, description, inputSchema)
-3. Add the handler function, matching the correct tier (CDS read / CMS list-get / create / update / delete / validate / submit)
-4. Register in `HANDLERS`
-5. Wire a new domain module into `__init__.py` if needed
+1. Pick the right domain file (existing domain if it fits, new `mcp/cms/<domain>.py` otherwise — with its own `ToolModule`/`CmsToolModule` subclass)
+2. Add an `@tool(...)`-decorated handler **method** to that class — the decorator carries the name, description, and inputSchema (there is no separate `SCHEMAS` list to edit)
+3. Write the method body, matching the correct tier (CDS read / CMS list-get / create / update / delete / validate)
+4. `SCHEMAS, HANDLERS = <module>.build()` at the bottom picks the new method up automatically — no `HANDLERS` dict to edit
+5. Wire a new domain module into `__init__.py` (import its `SCHEMAS`/`HANDLERS`, append to the `TOOLS`/`CMS_TOOLS` list and `_HANDLER_REGISTRY`) if needed
 
 Don't guess at request/response shapes — read the full `.mdx` doc page for
 each endpoint (`cat /api-reference/.../<endpoint>.mdx`) to get the exact
@@ -124,8 +124,8 @@ parameters, required fields, and response examples before writing the schema.
 ## Step 6 — Verify and report
 
 ```bash
-python manage.py test authentication.tests mcp.tests
-python -c "
+python manage.py check
+python manage.py shell -c "
 from mcp.cds import TOOLS, _HANDLER_REGISTRY as CDS
 from mcp.cms import CMS_TOOLS, _HANDLER_REGISTRY as CMS
 all_ok = all(t['name'] in CDS for t in TOOLS) and all(t['name'] in CMS for t in CMS_TOOLS)

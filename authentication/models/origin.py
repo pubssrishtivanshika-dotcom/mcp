@@ -10,8 +10,9 @@ class AllowedOrigin(models.Model):
 
     Web-based AI clients (Claude, ChatGPT, Gemini, …) send an Origin header that
     must match an active row here. Desktop clients send no Origin and bypass this
-    check. Rows are managed directly in the database (e.g. via `manage.py shell`);
-    changes take effect immediately since the table is read directly on each request.
+    check. Initial rows are seeded by data migration 0002_seed_allowed_origins;
+    thereafter rows are managed directly in the database (e.g. via `manage.py shell`),
+    and changes take effect immediately since the table is read directly on each request.
     """
 
     origin     = models.CharField(max_length=255, unique=True, db_index=True)
