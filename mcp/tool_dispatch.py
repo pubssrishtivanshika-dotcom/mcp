@@ -9,15 +9,10 @@ injected; everything else lives here once.
 from mcp.exceptions import UnknownToolError
 
 
-def run_tool_dispatch(credentials, name, args, *, handlers,
-                      logger, log_label, unknown_message, on_error):
-    """Resolve ``name`` → handler and execute it.
-
-    ``on_error(exc, name)`` is called inside the ``except`` block for any failure
-    and must either return a fallback value or re-raise (a bare ``raise`` works,
-    since the original exception is still active).
-    """
+def run_tool_dispatch(credentials, name, args, *, handlers, logger, log_label, unknown_message, on_error):
+    """Run a tool dispatch, returning the handler's result or an error payload."""
     args = args or {}
+    
     try:
         handler = handlers.get(name)
         if handler is None:

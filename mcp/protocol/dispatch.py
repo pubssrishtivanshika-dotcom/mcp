@@ -198,17 +198,32 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
     try:
         result      = dispatch_cms_tool(credentials, name, args) if name in CMS_TOOL_NAMES else dispatch_cds_tool(credentials, name, args)
         duration_ms = round((time.perf_counter() - t0) * 1000, 2)
-        output_text = json.dumps(result, indent=2) if result else ""
-        result_size = len(output_text)
 
         degraded_reason = (result.get("error") or result.get("error_type")) if isinstance(result, dict) else None
+
+        # Never hand the model an empty/blank tool result — that ambiguity is the
+        # #1 hallucination trigger (it fills the gap). Emit an explicit no-data
+        # marker so the model knows the tool genuinely returned nothing.
+        if result in (None, "", [], {}, ()):
+            output_text = json.dumps({
+                "status": "no_data",
+                "message": "The tool returned no data for this request.",
+            })
+        else:
+            output_text = json.dumps(result, indent=2)
+        result_size = len(output_text)
 
         if degraded_reason:
             logger.warning("MCP tools/call degraded: tool=%s reason=%s duration_ms=%.2f", name, degraded_reason, duration_ms)
         else:
             logger.info("MCP tools/call success: tool=%s duration_ms=%.2f response_size=%d", name, duration_ms, result_size)
 
-        return jsonrpc_ok(id_, {"content": [{"type": "text", "text": output_text}]})
+        # Surface upstream errors/degraded results to the client model via the MCP
+        # isError flag so it treats them as failures, not as data to reason over.
+        response = {"content": [{"type": "text", "text": output_text}]}
+        if degraded_reason:
+            response["isError"] = True
+        return jsonrpc_ok(id_, response)
 
     except Exception as exc:
         duration_ms    = round((time.perf_counter() - t0) * 1000, 2)

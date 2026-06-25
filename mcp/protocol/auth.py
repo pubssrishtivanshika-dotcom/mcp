@@ -1,11 +1,3 @@
-"""Credential resolution and unauthorized-response helpers for MCP requests.
-
-resolve_credentials() returns a 3-tuple:
-    (credentials_dict | None, None, error_code | None)
-
-The second element is always None (tokens do not expire).
-error_code is one of the typed reason codes below — never a generic string.
-"""
 import logging
 import re
 from typing import Optional
@@ -18,7 +10,6 @@ from authentication.services import auth_service
 
 logger = logging.getLogger(__name__)
 
-# Typed 401 reason codes.
 SESSION_EXPIRED = "SESSION_EXPIRED"
 TOKEN_EXPIRED = "TOKEN_EXPIRED"
 
