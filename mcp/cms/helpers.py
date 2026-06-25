@@ -87,9 +87,9 @@ def preview_delete_op(resource: str, item_id, item: dict, warning: str = "") -> 
 
 def validate_live_blog_post_type(credentials: dict, post_id: int):
     """Return an error dict if post_id doesn't exist or isn't a LiveBlog; else None."""
-    post = cms_client.get(credentials, f"/post/{post_id}/")
-    if "error_type" in post:
-        if post.get("error_type") == "not_found":
+    raw = cms_client.get(credentials, f"/post/{post_id}/")
+    if isinstance(raw, dict) and "error_type" in raw:
+        if raw.get("error_type") == "not_found":
             return {
                 "error_type": "not_found",
                 "message": (
@@ -98,8 +98,10 @@ def validate_live_blog_post_type(credentials: dict, post_id: int):
                 ),
                 "retryable": False,
             }
-        return post
-    if post.get("type") != "LiveBlog":
+        return raw
+    # The CMS GET wraps the post under a "data" key — unwrap before reading "type".
+    post = raw.get("data", raw) if isinstance(raw, dict) else raw
+    if not isinstance(post, dict) or post.get("type") != "LiveBlog":
         return {
             "error_type": "bad_request",
             "message": (

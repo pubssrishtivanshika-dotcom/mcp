@@ -1,7 +1,7 @@
-from mcp.clients.cms import cms_client  # noqa: F401 (kept for test patch target)
+from mcp.clients.cms import cms_client
 from mcp.tool_registry import PAGINATION_PROPERTIES, tool
 
-from mcp.cms.helpers import CmsToolModule
+from mcp.cms.helpers import CmsToolModule, preview_create_op, preview_update_op
 
 _BASE = "/media-library/"
 _path_for = (_BASE + "{}/").format
@@ -58,7 +58,12 @@ class MediaTools(CmsToolModule):
         },
     )
     def register_media_asset(self, credentials: dict, args: dict):
-        return self.create_resource(credentials, args, resource="Media", path=_BASE)
+        # The media-library endpoint rejects application/json — send multipart/form-data.
+        dry_run = args.get("dry_run", True)
+        payload = {k: v for k, v in args.items() if k != "dry_run"}
+        if dry_run:
+            return {"dry_run": True, "preview": preview_create_op("Media", payload)}
+        return cms_client.post_form(credentials, _BASE, payload)
 
     @tool(
         name="update_media_asset",
@@ -82,7 +87,18 @@ class MediaTools(CmsToolModule):
         },
     )
     def update_media_asset(self, credentials: dict, args: dict):
-        return self.update_resource(credentials, args, resource="Media", path_for=_path_for)
+        # The media-library endpoint rejects application/json — send multipart/form-data.
+        dry_run = args.get("dry_run", True)
+        item_id = args["id"]
+        changes = {k: v for k, v in args.items() if k not in ("id", "dry_run")}
+        path    = _path_for(item_id)
+        if dry_run:
+            current = cms_client.get(credentials, path)
+            if isinstance(current, dict) and "error_type" in current:
+                return current
+            current_data = current.get("data", current) if isinstance(current, dict) else current
+            return {"dry_run": True, "preview": preview_update_op("Media", item_id, current_data, changes)}
+        return cms_client.patch_form(credentials, path, changes)
 
     @tool(
         name="delete_media_asset",

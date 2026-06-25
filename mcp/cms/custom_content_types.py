@@ -1,7 +1,7 @@
 from mcp.clients.cms import cms_client  # noqa: F401 (kept for test patch target)
 from mcp.tool_registry import PAGINATION_PROPERTIES, tool
 
-from mcp.cms.helpers import CmsToolModule
+from mcp.cms.helpers import CmsToolModule, preview_update_op
 
 _BASE = "/entities/content-type/"
 _path_for = (_BASE + "{}/").format
@@ -90,7 +90,31 @@ class CustomContentTypesTools(CmsToolModule):
         },
     )
     def update_content_type_schema(self, credentials: dict, args: dict):
-        return self.update_resource(credentials, args, resource="Custom Content Type", path_for=_path_for)
+        # Not routed through self.update_resource: the CMS PATCH validator requires the
+        # immutable api_slug / api_collections_slug / response_type on every update, so we
+        # refetch the current schema and resend them alongside the caller's changes.
+        dry_run = args.get("dry_run", True)
+        item_id = args["id"]
+        changes = {k: v for k, v in args.items() if k not in ("id", "dry_run")}
+        path    = _path_for(item_id)
+
+        current_raw = cms_client.get(credentials, path)
+        if isinstance(current_raw, dict) and "error_type" in current_raw:
+            return current_raw
+        current = current_raw.get("data", current_raw) if isinstance(current_raw, dict) else current_raw
+
+        if dry_run:
+            return {"dry_run": True, "preview": preview_update_op("Custom Content Type", item_id, current, changes)}
+
+        payload = {
+            "name":                 current.get("name"),
+            "api_slug":             current.get("api_slug"),
+            "api_collections_slug": current.get("api_collections_slug"),
+            "response_type":        current.get("response_type") or "json",
+            **changes,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        return cms_client.patch(credentials, path, payload)
 
     @tool(
         name="delete_content_type_schema",

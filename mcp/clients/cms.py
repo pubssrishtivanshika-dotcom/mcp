@@ -96,6 +96,42 @@ class CmsClient(BaseHttpClient):
     def delete(self, credentials: dict, path: str):
         return self._request("DELETE", credentials, path)
 
+    def _request_form(self, method: str, credentials: dict, path: str, *, data=None):
+        """multipart/form-data variant of _request. Some CMS endpoints (e.g. the media
+        library) reject application/json and require multipart/form-data instead."""
+        url = self.build_base_url(self.BASE, credentials) + path
+        # Force multipart/form-data: each field is a (filename=None, value) part so requests
+        # sets the multipart boundary Content-Type itself. Nested values are JSON-encoded.
+        parts = {
+            k: (None, json.dumps(v) if isinstance(v, (dict, list)) else str(v))
+            for k, v in (data or {}).items()
+            if v is not None
+        }
+        headers = {"Authorization": self.build_basic_auth_headers(credentials)["Authorization"]}
+        http_fn = getattr(requests, method.lower())
+        try:
+            resp = http_fn(url, headers=headers, files=parts, timeout=self.REQUEST_TIMEOUT)
+            if not resp.ok:
+                try:
+                    resp.raise_for_status()
+                except requests.exceptions.HTTPError as exc:
+                    return self.normalize_error(exc, url)
+            if method == "DELETE" and (resp.status_code == 204 or not resp.content):
+                return {"status": "deleted", "http_status": resp.status_code}
+            return resp.json()
+        except requests.exceptions.Timeout:
+            return {"error_type": "timeout", "message": "CMS request timed out.", "retryable": True}
+        except requests.exceptions.ConnectionError:
+            return {"error_type": "system_error", "message": "Could not connect to CMS API.", "retryable": True}
+        except Exception as exc:
+            logger.error("cms_%s_form unexpected error: path=%s error=%s", method.lower(), path, exc, exc_info=True)
+
+    def post_form(self, credentials: dict, path: str, data: dict):
+        return self._request_form("POST", credentials, path, data=data)
+
+    def patch_form(self, credentials: dict, path: str, data: dict):
+        return self._request_form("PATCH", credentials, path, data=data)
+
 
 # Module-level singleton — the shared CMS service object.
 cms_client = CmsClient()
