@@ -3,10 +3,12 @@ import json
 import logging
 import time
 
+import newrelic.agent
 from django.conf import settings
 
 from mcp.cds import TOOLS, dispatch_cds_tool
 from mcp.cms import CMS_TOOL_NAMES, CMS_TOOLS, dispatch_cms_tool
+from mcp.prompt_capture import strip_prompt_from_args
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
@@ -174,14 +176,19 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
     """Execute a single tools/call request and return the JSON-RPC response."""
     params = body.get("params", {})
     name   = params.get("name", "")
+    args   = strip_prompt_from_args(params)
+
+    # Tag the New Relic transaction with the tool name up front, so the attribute
+    # is present even when the call fails validation or raises before completion.
+    newrelic.agent.add_custom_attribute("mcp.tool", name)
 
     logger.info(
         "MCP tools/call: tool=%s session=%s args_count=%d",
-        name, session_id, len(params) if params else 0,
+        name, session_id, len(args) if args else 0,
     )
 
     # Validate arguments against the tool's inputSchema before dispatching
-    validation_error = _validate_tool_args(name, params or {})
+    validation_error = _validate_tool_args(name, args or {})
     if validation_error:
         logger.warning(
             "MCP tools/call validation error: tool=%s session=%s message=%s",
@@ -194,10 +201,14 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
 
     t0 = time.perf_counter()
     try:
-        result      = dispatch_cms_tool(credentials, name, params) if name in CMS_TOOL_NAMES else dispatch_cds_tool(credentials, name, args)
+        result      = dispatch_cms_tool(credentials, name, args) if name in CMS_TOOL_NAMES else dispatch_cds_tool(credentials, name, args)
         duration_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         degraded_reason = (result.get("error") or result.get("error_type")) if isinstance(result, dict) else None
+
+        # Per-tool latency + outcome for New Relic FACET mcp.tool dashboards.
+        newrelic.agent.add_custom_attribute("mcp.duration_ms", duration_ms)
+        newrelic.agent.add_custom_attribute("mcp.status", "degraded" if degraded_reason else "success")
 
         if result in (None, "", [], {}, ()):
             output_text = json.dumps({
@@ -223,6 +234,9 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
     except Exception as exc:
         duration_ms    = round((time.perf_counter() - t0) * 1000, 2)
         error_category = classify_tool_error(exc)
+        newrelic.agent.add_custom_attribute("mcp.duration_ms", duration_ms)
+        newrelic.agent.add_custom_attribute("mcp.status", "error")
+        newrelic.agent.add_custom_attribute("mcp.error_category", error_category)
         logger.error(
             "MCP tools/call error: tool=%s session=%s category=%s error=%s duration_ms=%.2f",
             name, session_id, error_category, exc, duration_ms, exc_info=True,

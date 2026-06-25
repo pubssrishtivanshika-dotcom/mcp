@@ -1,11 +1,4 @@
-"""Shared scaffolding for the CDS and CMS tool dispatchers.
-
-``dispatch_cds_tool`` and ``dispatch_cms_tool`` were near-identical: both resolve
-``name`` → handler, run it, and apply an error-handling policy. The only real
-differences are that policy (CDS maps an upstream 401 to an ``auth_expired``
-payload; CMS just re-raises) and a couple of labels. Those differences are
-injected; everything else lives here once.
-"""
+"""Shared scaffolding for the CDS and CMS tool dispatchers."""
 
 
 def run_tool_dispatch(credentials, name, args, *, handlers, logger, log_label, unknown_message, on_error):

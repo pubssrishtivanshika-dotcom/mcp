@@ -16,7 +16,7 @@ class HealthCheckView(View):
     def get(self, request):
         return JsonResponse({
             "status":   "ok",
-            "service":  "publive-cds-mcp",
+            "service":  "publive-mcp",
             "version":  settings.SERVER_VERSION,
             "protocol": LATEST_PROTOCOL_VERSION,
         })

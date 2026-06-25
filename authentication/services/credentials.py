@@ -25,12 +25,6 @@ class CredentialsMixin:
         """
         token: str = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
         t0: float = time.perf_counter()
-        # Validate against the publisher root — the smallest authenticated GET that
-        # exists for every publisher (returns 401 without valid Basic auth, 200 with).
-        # We previously probed `/posts/?limit=1`, but that endpoint now requires a
-        # `field__eq` filter expression on some publishers and 400s on a bare call,
-        # which is indistinguishable from bad credentials. The root has no such
-        # requirement. Use the same env-configurable base URL as the CDS client.
         base = settings.CDS_BASE_URL.format(publisher_id=publisher_id)
         resp = requests.get(
             f"{base}/",
@@ -42,7 +36,6 @@ class CredentialsMixin:
             "CDS validation: publisher=%s status=%d latency_ms=%.2f",
             publisher_id, resp.status_code, latency_ms,
         )
-        # Only a 2xx means the credentials are genuinely valid.
         return 200 <= resp.status_code < 300, resp.status_code
 
     def verify_publive_credentials(

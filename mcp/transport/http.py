@@ -36,8 +36,6 @@ def handle_http_request(request, credentials: dict, token_expires_at) -> HttpRes
         return JsonResponse(jsonrpc_error(None, -32700, "Parse error"))
 
     # MCP-Protocol-Version header: required on every request after initialize.
-    # Absent → assume the pre-header revision (spec back-compat); present but
-    # unsupported → 400. The initialize request itself never carries it.
     if not _is_initialize_request(body):
         header_version = request.META.get("HTTP_MCP_PROTOCOL_VERSION")
         if header_version is None:
