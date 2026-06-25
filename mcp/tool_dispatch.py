@@ -6,7 +6,6 @@ differences are that policy (CDS maps an upstream 401 to an ``auth_expired``
 payload; CMS just re-raises) and a couple of labels. Those differences are
 injected; everything else lives here once.
 """
-from mcp.exceptions import UnknownToolError
 
 
 def run_tool_dispatch(credentials, name, args, *, handlers, logger, log_label, unknown_message, on_error):
@@ -17,7 +16,7 @@ def run_tool_dispatch(credentials, name, args, *, handlers, logger, log_label, u
         handler = handlers.get(name)
         if handler is None:
             logger.warning("%s: unknown tool=%s", log_label, name)
-            raise UnknownToolError(unknown_message.format(name=name))
+            return unknown_message
 
         return handler(credentials, args)
 

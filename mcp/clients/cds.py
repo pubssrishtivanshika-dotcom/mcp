@@ -12,8 +12,6 @@ import time
 from django.conf import settings
 import requests
 
-from mcp.exceptions import CdsClientError
-
 from mcp.clients.shared import BaseHttpClient
 
 logger = logging.getLogger(__name__)
@@ -93,11 +91,11 @@ class CdsClient(BaseHttpClient):
                         msg  = data.get("detail") or data.get("message") or f"HTTP {resp.status_code}"
                     except (ValueError, json.JSONDecodeError):
                         msg = f"HTTP {resp.status_code}"
-                    exc = CdsClientError(f"{msg} [url={url}]", response=resp)
+                    exc = "CdsClientError"
                     if resp.status_code == 408 and attempt == 0:
                         last_exc = exc
                         continue
-                    raise exc
+                    return exc
 
                 response_size = len(resp.content)
                 logger.info(

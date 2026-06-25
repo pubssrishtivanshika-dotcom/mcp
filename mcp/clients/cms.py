@@ -10,8 +10,6 @@ import logging
 from django.conf import settings
 import requests
 
-from mcp.exceptions import CmsClientError
-
 from mcp.clients.shared import BaseHttpClient
 
 logger = logging.getLogger(__name__)
@@ -61,20 +59,14 @@ class CmsClient(BaseHttpClient):
         return {"error_type": cls.CATEGORY_CLIENT_ERROR, "message": msg, "raw_api_response": raw_body, "retryable": False}
 
     def _request(self, method: str, credentials: dict, path: str, *, params=None, body=None):
-        """Single code path for every CMS verb.
-
-        ``method`` is an upper-case HTTP verb. GET passes ``params``; POST/PATCH pass a
-        JSON ``body``; DELETE passes neither and tolerates an empty (204) response. The
-        HTTP function is resolved off ``requests`` by name at call time so test patches of
-        ``requests.get`` / ``requests.post`` etc. are honoured.
-        """
+        """Single code path for every CMS verb.        """
         url          = self.build_base_url(self.BASE, credentials) + path
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
         http_fn = getattr(requests, method.lower())
         try:
             resp = http_fn(url, headers=self.build_basic_auth_headers(credentials), params=clean_params, json=body, timeout=self.REQUEST_TIMEOUT)
             if not resp.ok:
-                exc = CmsClientError(f"HTTP {resp.status_code}", response=resp)
+                exc = "CmsClientError"
                 return self.normalize_error(exc, url)
             if method == "DELETE" and (resp.status_code == 204 or not resp.content):
                 return {"status": "deleted", "http_status": resp.status_code}
@@ -85,7 +77,7 @@ class CmsClient(BaseHttpClient):
             return {"error_type": "system_error", "message": "Could not connect to CMS API.", "retryable": True}
         except Exception as exc:
             logger.error("cms_%s unexpected error: path=%s error=%s", method.lower(), path, exc, exc_info=True)
-            raise
+    
 
     def get(self, credentials: dict, path: str, params=None):
         return self._request("GET", credentials, path, params=params)
