@@ -66,8 +66,13 @@ class CmsClient(BaseHttpClient):
         try:
             resp = http_fn(url, headers=self.build_basic_auth_headers(credentials), params=clean_params, json=body, timeout=self.REQUEST_TIMEOUT)
             if not resp.ok:
-                exc = "CmsClientError"
-                return self.normalize_error(exc, url)
+                # Raise so the HTTPError carries .response (status + body), letting
+                # normalize_error classify the real failure (401 / 404 / 4xx / 5xx)
+                # instead of collapsing every error into a generic system_error.
+                try:
+                    resp.raise_for_status()
+                except requests.exceptions.HTTPError as exc:
+                    return self.normalize_error(exc, url)
             if method == "DELETE" and (resp.status_code == 204 or not resp.content):
                 return {"status": "deleted", "http_status": resp.status_code}
             return resp.json()

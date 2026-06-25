@@ -5,7 +5,6 @@ All error paths return a normalised error dict (mirroring the CMS client) instea
 of raising, so callers can inspect ``error_type`` and decide whether to surface a
 message or propagate.
 """
-import json
 import logging
 import time
 
@@ -86,16 +85,15 @@ class CdsClient(BaseHttpClient):
                 latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
                 if not resp.ok:
+                    # Raise so the HTTPError carries .response (status + body); store the
+                    # real exception for the retry/normalize path instead of a bare string.
                     try:
-                        data = resp.json()
-                        msg  = data.get("detail") or data.get("message") or f"HTTP {resp.status_code}"
-                    except (ValueError, json.JSONDecodeError):
-                        msg = f"HTTP {resp.status_code}"
-                    exc = "CdsClientError"
-                    if resp.status_code == 408 and attempt == 0:
+                        resp.raise_for_status()
+                    except requests.exceptions.HTTPError as exc:
                         last_exc = exc
-                        continue
-                    return exc
+                        if resp.status_code == 408 and attempt == 0:
+                            continue
+                        return self.normalize_error(exc, url)
 
                 response_size = len(resp.content)
                 logger.info(
