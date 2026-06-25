@@ -99,8 +99,7 @@ class CmsPostsTools(CmsToolModule):
             "If the user has not provided an author ID, call fetch_authors first to get one, then ask the user to confirm. "
             "english_title must be plain English text matching the title, NOT a pre-slugified string. "
             "TYPE-SPECIFIC REQUIREMENTS — do NOT attempt to create these without the noted fields: "
-            "Video: the CMS API rejects meta_video_embed regardless of the value passed (known upstream bug). "
-            "Create an empty Video draft via the Publive dashboard first, then use update_post to set title, content, tags, and other mutable fields. "
+            "Video: requires meta_video_embed (the raw <iframe> embed HTML, e.g. a YouTube/Vimeo embed); optionally also meta_video_url (the video page URL). Both are merged into meta_data automatically. "
             "Web Story: requires AMP story slide markup in the content field AND meta_landscape_thumbnail (numeric media ID integer from the Publive media library, e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset). "
             "Gallery: requires gallery image data in content or custom_entity, and after_para (integer, default 0). "
             "Article, LiveBlog, CustomPage: no extra required fields beyond the six standard ones. "
@@ -131,7 +130,7 @@ class CmsPostsTools(CmsToolModule):
                 "hide_banner_image":   {"type": "boolean", "description": "Hide the featured image on the post"},
                 "custom_published_at":      {"type": "string",  "description": "Backdated publish timestamp ISO 8601. Immutable after creation."},
                 "meta_video_url":           {"type": "string",  "description": "Video post only — URL of the video page (e.g. YouTube/Vimeo URL). Merged into meta_data. Immutable after creation."},
-                "meta_video_embed":         {"type": "string",  "description": "Video post only — raw iframe embed HTML. NOTE: the CMS API currently rejects this field during creation (known upstream validator bug — rejects both iframe strings and media IDs). Create Video posts via the Publive dashboard instead, then use update_post for mutable fields."},
+                "meta_video_embed":         {"type": "string",  "description": "Video post only (REQUIRED for Video) — raw <iframe> embed HTML for the video (e.g. a YouTube/Vimeo embed). Merged into meta_data. Immutable after creation."},
                 "meta_landscape_thumbnail": {"type": "integer", "description": "Web Story only — numeric media ID of the landscape thumbnail image (e.g. 295255). Retrieve the ID from get_media_asset or list_media_assets (use the 'id' field, NOT the path). Merged into meta_data. Immutable after creation."},
                 "after_para":              {"type": "integer", "description": "Gallery/Article — paragraph position for injecting content. Defaults to 0 automatically for both Gallery and Article posts if not provided (the CMS requires it but has no default of its own)."},
                 "meta_data":               {"type": "object",  "description": "Arbitrary key-value metadata (e.g. access_type). Merged with any type-specific meta fields above. Immutable after creation."},
@@ -162,19 +161,13 @@ class CmsPostsTools(CmsToolModule):
             payload["meta_data"] = {**existing_meta, **meta_extras}
 
         post_type = payload.get("type", "")
-        if post_type == "Video":
-            # The CMS API validator rejects meta_video_embed regardless of the value passed
-            # (both iframe HTML strings and valid media IDs fail with "must be a valid publive media ID").
-            # Existing Video posts were created via the dashboard which bypasses this validator.
-            # Block early and guide the user to the dashboard-first workaround.
+        if post_type == "Video" and not (payload.get("meta_data") or {}).get("meta_video_embed"):
             return {
-                "error_type": "unsupported_operation",
+                "error_type": "missing_required_field",
                 "message": (
-                    "Video posts cannot be created directly via the CMS API. "
-                    "The CMS backend rejects the meta_video_embed field regardless of the value passed "
-                    "(known upstream validator bug — affects both iframe strings and media IDs). "
-                    "Workaround: create an empty Video draft via the Publive dashboard, "
-                    "then use update_post to set the title, content, tags, contributors, and other mutable fields."
+                    "Video posts require meta_video_embed — the raw <iframe> embed HTML for the video "
+                    "(e.g. a YouTube/Vimeo embed). Optionally also pass meta_video_url (the video page URL). "
+                    "Both are merged into meta_data automatically."
                 ),
                 "retryable": False,
             }
