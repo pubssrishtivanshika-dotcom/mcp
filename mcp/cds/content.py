@@ -1,4 +1,4 @@
-"""CDS read tools for content metadata: types, ad slots, forms, and URL identification."""
+"""CDS read tools for content metadata: types, ad slots, and URL identification."""
 from mcp.clients.cds import cds_client
 from mcp.tool_registry import ToolModule, tool
 
@@ -35,21 +35,6 @@ class ContentTools(ToolModule):
     )
     def fetch_content_type_definitions(self, credentials: dict, args: dict):
         return cds_client.get(credentials, "/content-types/")
-
-    @tool(
-        name="fetch_form_schema",
-        description="Get a form schema by ID, including field definitions, validation rules, field groups, and captcha configuration.",
-        inputSchema={
-            "type": "object",
-            "required": ["schema_id"],
-            "properties": {
-                "schema_id":   {"type": "string", "minLength": 1, "description": "24-character hex form schema ID"},
-                "page_source": {"type": "string", "description": "Optional context used by the serializer"},
-            },
-        },
-    )
-    def fetch_form_schema(self, credentials: dict, args: dict):
-        return cds_client.get(credentials, f"/form-schemas/{args['schema_id']}/", {"page_source": args.get("page_source")})
 
 
 content_tools = ContentTools()

@@ -27,7 +27,7 @@ mcp/
     tags.py                ← fetch_published_tags, fetch_published_tag
     authors.py             ← fetch_authors, fetch_author
     publisher.py           ← fetch_publisher_profile, fetch_site_navigation, fetch_site_footer, fetch_newsletter_groups
-    content.py             ← resolve_url_to_content_type, fetch_ad_slots, fetch_content_type_definitions, fetch_form_schema
+    content.py             ← resolve_url_to_content_type, fetch_ad_slots, fetch_content_type_definitions
     sitemaps.py            ← fetch_sitemap, fetch_sitemap_page
     static_files.py        ← fetch_static_file
     __init__.py            ← assembles TOOLS list + _HANDLER_REGISTRY + dispatch_cds_tool()
@@ -44,7 +44,7 @@ mcp/
     custom_content_types.py← list/get/create/update/delete_content_type_schema
     validators.py          ← validate_media_asset, validate_category, validate_author …
     newsletter.py          ← subscribe_newsletter, unsubscribe_newsletter, verify_newsletter_subscriber_email
-    reader.py              ← login_reader, register_reader, forgot_password_reader, reset_password_reader, verify_reader_email
+    reader.py              ← register_reader, forgot_password_reader, reset_password_reader
     __init__.py            ← assembles CMS_TOOLS + CMS_TOOL_NAMES + dispatch_cms_tool()
   clients/
     cds.py                 ← cds_client (CdsClient): .get(credentials, path, params), .is_not_found(result)

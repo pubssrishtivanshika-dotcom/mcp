@@ -60,7 +60,7 @@ For each documented endpoint, decide whether an existing tool already covers
 it. Use the naming conventions from [[add-tool]] (`fetch_*` / `resolve_*` for
 CDS reads, `list_editorial_*` / `get_editorial_*` / `create_*` / `update_*` /
 `delete_*` / `validate_*` for CMS) — a doc page like
-`reader/login.mdx` maps conceptually to a tool like `login_reader`, even if
+`reader/register.mdx` maps conceptually to a tool like `register_reader`, even if
 the exact name differs slightly. Read the handler body to confirm it calls the
 matching path before concluding "covered".
 
