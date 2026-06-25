@@ -50,6 +50,46 @@ def _remap_post_type_error(result: dict, post_type: str) -> dict:
     }
 
 
+_NO_DATA_TYPE_HINTS = {
+    "Web Story": (
+        "Web Story posts require valid AMP story slide markup in the 'content' field. "
+        "Create the post via the Publive dashboard first, then update other fields via update_post."
+    ),
+    "Gallery": (
+        "Gallery posts require image data in 'content' as a JSON string: "
+        "{\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, "
+        "\"content_html\": \"<p>...</p>\"} — each id is a numeric media ID from list_media_assets/get_media_asset."
+    ),
+}
+
+
+def _no_data_type_hint(result, post_type: str):
+    """If the CMS rejected a create with 'No data provided', return type-specific guidance
+    (Web Story / Gallery need real content); otherwise None."""
+    if not (
+        isinstance(result, dict)
+        and result.get("error_type") == "bad_request"
+        and "no data provided" in result.get("message", "").lower()
+    ):
+        return None
+    hint = _NO_DATA_TYPE_HINTS.get(post_type)
+    return {"error_type": "bad_request", "message": hint, "retryable": False} if hint else None
+
+
+def _find_recent_post_by_english_title(credentials: dict, english_title):
+    """Best-effort: find a recently-created post by english_title. Used to dedup a non-Draft
+    POST that returned 5xx but had actually committed, before retrying via the two-step flow."""
+    if not english_title:
+        return None
+    listing = cms_client.get(credentials, "/post/", {"limit": 20})
+    if not isinstance(listing, dict) or listing.get("error_type"):
+        return None
+    for item in (listing.get("results") or listing.get("data") or []):
+        if isinstance(item, dict) and item.get("english_title") == english_title:
+            return item
+    return None
+
+
 def _is_draft_status(status) -> bool:
     """True if a status value represents Draft (case/space tolerant)."""
     return isinstance(status, str) and status.strip().lower() == "draft"
@@ -101,10 +141,17 @@ class CmsPostsTools(CmsToolModule):
             "TYPE-SPECIFIC REQUIREMENTS — do NOT attempt to create these without the noted fields: "
             "Video: requires meta_video_embed (the raw <iframe> embed HTML, e.g. a YouTube/Vimeo embed); optionally also meta_video_url (the video page URL). Both are merged into meta_data automatically. "
             "Web Story: requires AMP story slide markup in the content field AND meta_landscape_thumbnail (numeric media ID integer from the Publive media library, e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset). "
-            "Gallery: requires gallery image data in content or custom_entity, and after_para (integer, default 0). "
+            "Gallery: the content field must be a JSON STRING carrying the gallery's image data — "
+            "shape: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}, ...]}, \"content_html\": \"<p>...</p>\"} "
+            "where each id is a numeric media ID from list_media_assets/get_media_asset (use the 'id' field). "
+            "Also takes after_para (integer, default 0). NOTE: an empty gallery (no images in data) creates fine as a Draft but FAILS to publish "
+            "(the CMS returns 'No data provided', or HTTP 500 if content is plain HTML instead of the JSON shape above). "
             "Article, LiveBlog, CustomPage: no extra required fields beyond the six standard ones. "
-            "DRAFT posts (status=Draft): created immediately — no preview step. "
-            "PUBLISHED/SCHEDULED/APPROVAL PENDING posts: dry_run=true (default) shows a full preview. "
+            "DRAFT posts (status=Draft): created immediately — no preview/confirmation step. "
+            "PUBLISHED/SCHEDULED/APPROVAL PENDING posts: dry_run=true (default) returns a preview of exactly "
+            "what will be created and requests confirmation — NO post (not even a draft) is written on this call. "
+            "Only after the user confirms do you call again with dry_run=false, which creates the post directly "
+            "in the requested status in a single step. "
             "Immutable after creation: english_title, type, slug, meta_data, custom_published_at."
         ),
         inputSchema={
@@ -117,7 +164,7 @@ class CmsPostsTools(CmsToolModule):
                 "status":              {"type": "string", "minLength": 1,  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "Primary category ID"},
                 "contributors":        {"type": "string", "minLength": 1,  "description": "REQUIRED — comma-separated author IDs (e.g. '12' or '12,15')."},
-                "content":             {"type": "string",  "description": "HTML body content"},
+                "content":             {"type": "string",  "description": "HTML body content. For Gallery posts this must instead be a JSON string holding the image data: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, \"content_html\": \"<p>...</p>\"}."},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated additional category IDs"},
                 "banner_url":          {"type": "integer", "description": "Media ID for the featured image"},
@@ -197,9 +244,10 @@ class CmsPostsTools(CmsToolModule):
             return {
                 "error_type": "missing_required_field",
                 "message": (
-                    "Gallery posts require gallery image data in the 'content' or 'custom_entity' field. "
-                    "Create an empty Gallery draft via the Publive dashboard first, "
-                    "then use update_post to update other fields programmatically."
+                    "Gallery posts require image data in the 'content' field as a JSON string: "
+                    "{\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, "
+                    "\"content_html\": \"<p>...</p>\"} — each id is a numeric media ID from list_media_assets/get_media_asset. "
+                    "An empty gallery creates as a Draft but cannot be published."
                 ),
                 "retryable": False,
             }
@@ -210,43 +258,56 @@ class CmsPostsTools(CmsToolModule):
         _coerce_post_int_fields(payload)
         _strip_list_brackets(payload)
 
+        # Draft: create directly and immediately — no preview/confirmation step.
         if payload.get("status") == "Draft":
             return _remap_post_type_error(cms_client.post(credentials, "/post/", payload), post_type)
 
+        # Non-Draft (Published / Scheduled / Approval Pending): never write on the first call.
+        # Show a preview of exactly what will be created and request explicit confirmation.
+        # No draft is created here — this only renders the preview.
         if dry_run:
-            return {"dry_run": True, "preview": helpers.preview_create_op("Post", payload)}
+            status = payload.get("status")
+            confirm_note = (
+                f"\n  This will CREATE and immediately set the post LIVE (status '{status}')."
+                if status == "Published"
+                else f"\n   This will CREATE the post with status '{status}'."
+            )
+            preview = helpers.preview_create_op("Post", payload) + confirm_note + (
+                "\nTo confirm, call create_post again with the same arguments and dry_run=false."
+            )
+            return {"dry_run": True, "preview": preview, "confirmation_required": True}
 
-        # CMS API does not support creating a post directly in non-Draft status (returns HTTP 500).
-        # Two-step: POST as Draft, then PATCH to the intended status.
+        # Preferred path: create directly in the intended (non-Draft) status with a single POST.
+        # The backend supports this (a single POST with status=Published publishes e.g. a Video).
+        # The two-step "POST as Draft → PATCH status" fallback below is kept only for the case
+        # where a direct non-Draft POST is rejected with a 5xx, so no type can regress.
         intended_status = payload["status"]
-        draft_payload = {**payload, "status": "Draft"}
+        result = _remap_post_type_error(cms_client.post(credentials, "/post/", payload), post_type)
 
-        result = _remap_post_type_error(cms_client.post(credentials, "/post/", draft_payload), post_type)
+        no_data_hint = _no_data_type_hint(result, post_type)
+        if no_data_hint is not None:
+            return no_data_hint
 
-        if (
-            isinstance(result, dict)
-            and result.get("error_type") == "bad_request"
-            and "no data provided" in result.get("message", "").lower()
-        ):
-            type_hints = {
-                "Web Story": (
-                    "Web Story posts require valid AMP story slide markup in the 'content' field. "
-                    "Create the post via the Publive dashboard first, then update other fields via update_post."
-                ),
-                "Gallery": (
-                    "Gallery posts require gallery image data in the 'content' or 'custom_entity' field. "
-                    "Create the post via the Publive dashboard first, then update other fields via update_post."
-                ),
-            }
-            hint = type_hints.get(post_type)
-            if hint:
-                return {"error_type": "bad_request", "message": hint, "retryable": False}
-
-        if isinstance(result, dict) and "error_type" in result:
+        if not (isinstance(result, dict) and result.get("error_type") == "upstream_error"):
             return result
 
-        data = result.get("data", result) if isinstance(result, dict) else result
-        post_id = data.get("id") if isinstance(data, dict) else None
+        # Direct create 5xx'd — fall back to the two-step flow. First check whether the 5xx
+        # actually committed the post (reuse it rather than create a duplicate).
+        existing = _find_recent_post_by_english_title(credentials, payload.get("english_title"))
+        if existing is not None:
+            post_id = existing.get("id")
+        else:
+            draft_result = _remap_post_type_error(
+                cms_client.post(credentials, "/post/", {**payload, "status": "Draft"}), post_type
+            )
+            draft_hint = _no_data_type_hint(draft_result, post_type)
+            if draft_hint is not None:
+                return draft_hint
+            if isinstance(draft_result, dict) and "error_type" in draft_result:
+                return draft_result
+            draft_data = draft_result.get("data", draft_result) if isinstance(draft_result, dict) else draft_result
+            post_id = draft_data.get("id") if isinstance(draft_data, dict) else None
+
         if not post_id:
             return result
 
@@ -259,7 +320,7 @@ class CmsPostsTools(CmsToolModule):
             return {
                 "error_type": "partial_success",
                 "message": (
-                    f"Post was created as Draft (ID: {post_id}) but setting status to "
+                    f"Post was created (ID: {post_id}) but setting status to "
                     f"{intended_status} failed: {patch_result.get('message', 'unknown error')}. "
                     "Use update_post to retry the status change."
                 ),
@@ -284,7 +345,7 @@ class CmsPostsTools(CmsToolModule):
             "properties": {
                 "id":                  {"type": "integer", "description": "Post ID"},
                 "title":               {"type": "string",  "description": "New post headline"},
-                "content":             {"type": "string",  "description": "New HTML body content"},
+                "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts this must be a JSON string holding image data: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, \"content_html\": \"<p>...</p>\"} — required (with image entries) to publish a Gallery."},
                 "status":              {"type": "string",  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "New primary category ID"},
                 "contributors":        {"type": "string",  "description": "Comma-separated author IDs"},
