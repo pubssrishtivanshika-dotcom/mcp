@@ -3,8 +3,6 @@ import base64
 
 import requests
 
-from mcp.exceptions import MissingPublisherError
-
 # Shared tail of every "credentials rejected (HTTP 401)" message. Each site
 # (the CDS/CMS clients and the CDS tool-dispatch error handler) prepends its own
 # context sentence, then appends this identical re-authentication hint.
@@ -31,7 +29,7 @@ class BaseHttpClient:
         """Resolve a publisher-scoped base URL from credentials."""
         publisher_id = credentials.get("publisherId", "")
         if not publisher_id:
-            raise MissingPublisherError("No publisher ID in credentials — please re-authenticate")
+            return "No publisher ID in credentials — please re-authenticate"
         return template.format(publisher_id=publisher_id)
 
     @staticmethod
