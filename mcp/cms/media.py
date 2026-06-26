@@ -36,8 +36,17 @@ class MediaTools(CmsToolModule):
     @tool(
         name="register_media_asset",
         description=(
-            "Register an existing media URL into the CMS library. "
-            "Important: this does NOT upload files — it registers an external URL (e.g. from S3, Cloudinary). "
+            "Register an EXTERNALLY-hosted media URL into the CMS library. "
+            "Important: this does NOT upload a file — it only records an absolute URL that already exists "
+            "elsewhere (e.g. S3, Cloudinary, another CDN). "
+            "Use this ONLY for assets ALREADY hosted at a stable, permanent URL OUTSIDE Publive. "
+            "It will NOT produce a usable img_src/banner_url path for files that need to live on Publive's "
+            "own storage: the resolved path stays the external URL's path, not a real Publive storage key "
+            "like 'odishatv/media/media_files/...', so using the returned id as a banner_url/gallery img_src "
+            "yields a broken image. "
+            "This MCP server has NO real file-upload tool — to get a genuine 'odishatv/media/...' storage key, "
+            "upload the file through the Publive dashboard's media library, then reference it by its media id "
+            "or path. "
             "Immutable after creation: path, type. "
             "Workflow: dry_run=true (default) shows a preview — no changes made. "
             "Once confirmed, call again with dry_run=false."

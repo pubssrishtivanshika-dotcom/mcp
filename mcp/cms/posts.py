@@ -1,6 +1,7 @@
 import contextlib
 import json
 import logging
+import re
 
 from mcp.clients.cms import cms_client
 from mcp.tool_registry import PAGINATION_PROPERTIES, tool
@@ -13,13 +14,28 @@ logger = logging.getLogger(__name__)
 _path_for = "/post/{}/".format
 
 
+# A Thumbor dimension segment, e.g. '750x500' / '0x500' / '-100x100' (negative = flip).
+_THUMBOR_DIM_SEG = re.compile(r"^-?\d+x-?\d+$")
+
+
 def _normalize_img_src(value):
     """Reduce a media reference to the bare relative storage key the CMS gallery stores
     (e.g. 'odishatv/media/media_files/foo.jpg').
 
     The dashboard stores img_src as a relative path, NOT a full CDN URL. This accepts
     either form: a relative key is returned unchanged; a full CDN URL is stripped of its
-    scheme+host and any thumbor-style transform prefix ('fit-in/<dims>/', 'filters:.../').
+    scheme+host and any leading Thumbor transform prefix.
+
+    Thumbor prefixes stack in a fixed order and any subset may be present, e.g.
+        unsafe/fit-in/750x500/filters:quality(80)/filters:format(webp)/odishatv/media/...
+    so we strip control segments from the head in a loop until the next segment is the
+    real storage key:
+      - a leading 'unsafe' segment (case-insensitive),
+      - 'fit-in' followed by its dimension argument ('<W>x<H>'),
+      - any number of 'filters:...' segments.
+    The previous implementation only stripped 'fit-in' when it was the FIRST segment, so a
+    real 'unsafe/fit-in/.../...' URL slipped through unstripped and was stored as a broken
+    img_src/banner_url.
     """
     if not isinstance(value, str) or not value.strip():
         return value
@@ -28,113 +44,190 @@ def _normalize_img_src(value):
         rest = v.split("://", 1)[1]
         v = rest.split("/", 1)[1] if "/" in rest else ""
     segs = v.lstrip("/").split("/")
-    if segs and segs[0] == "fit-in":
-        segs.pop(0)            # 'fit-in'
-        if segs:
-            segs.pop(0)        # dimensions, e.g. '640x480'
-    while segs and segs[0].startswith("filters:"):
-        segs.pop(0)
+    while segs:
+        head = segs[0]
+        if head.lower() == "unsafe":
+            segs.pop(0)
+        elif head.lower() == "fit-in":
+            segs.pop(0)                                   # 'fit-in'
+            if segs and _THUMBOR_DIM_SEG.match(segs[0]):
+                segs.pop(0)                               # dimensions, e.g. '750x500'
+        elif head.startswith("filters:"):
+            segs.pop(0)
+        else:
+            break
     return "/".join(segs)
 
 
 def _resolve_media_url(credentials: dict, media_id):
-    """Resolve a CMS media-library id to the relative storage path the gallery stores
-    (e.g. 'odishatv/media/media_files/foo.jpg'). Returns None on failure."""
+    """Resolve a CMS media-library id to the storage path the gallery stores
+    (e.g. 'odishatv/media/media_files/foo.jpg').
+
+    Returns (path, error); exactly one is non-None:
+      - (path, None)  on success,
+      - (None, error) on ANY failure, where error is the CMS client's own normalized
+        error dict ({error_type, message, retryable}).
+
+    Crucially this no longer collapses every failure to None. A 404 ('not_found') means
+    the id genuinely does not exist; a 401/403 ('auth_error'/'bad_request'), timeout, or
+    5xx ('upstream_error') is a REAL upstream failure that must NOT be reported to the
+    caller as a bad media id. Callers inspect error['error_type'] / error['message'] to
+    surface the true cause.
+    """
     raw = cms_client.get(credentials, f"/media-library/{media_id}/")
-    if not isinstance(raw, dict) or raw.get("error_type"):
-        return None
-    data = raw.get("data", raw) if isinstance(raw, dict) else raw
+    if isinstance(raw, dict) and raw.get("error_type"):
+        return None, raw
+    if not isinstance(raw, dict):
+        return None, {
+            "error_type": "system_error",
+            "message": f"Unexpected (non-object) response while resolving media id {media_id}.",
+            "retryable": False,
+        }
+    data = raw.get("data", raw)
     if not isinstance(data, dict):
-        return None
+        data = raw
     # Prefer the relative 'path' (the storage key the writer expects); fall back to
-    # absolute_path and normalize it back down to the relative key.
-    return data.get("path") or data.get("absolute_path")
+    # absolute_path (a full CDN URL) which callers normalize back down to the relative key.
+    path = data.get("path") or data.get("absolute_path")
+    if not path:
+        return None, {
+            "error_type": "bad_request",
+            "message": (
+                f"Media id {media_id} exists but has no usable 'path'/'absolute_path' field "
+                "to use as an image source."
+            ),
+            "retryable": False,
+        }
+    return path, None
+
+
+def _resolve_media_error_message(prefix: str, media_id, error: dict, fallback_hint: str) -> dict:
+    """Build a caller-facing error that surfaces the REAL underlying CMS failure
+    (e.g. 'auth_error: ...', 'not_found: ...') rather than the old blanket
+    'could not resolve media id X'. Preserves the upstream error_type/retryable."""
+    error_type = error.get("error_type", "bad_request") if isinstance(error, dict) else "bad_request"
+    detail     = error.get("message", "unknown error") if isinstance(error, dict) else "unknown error"
+    if error_type == "not_found":
+        cause = (
+            f"media id {media_id} was not found — the id is wrong. "
+            "Verify it via get_media_asset / list_media_assets (use the 'id' field)."
+        )
+    else:
+        cause = (
+            f"resolving media id {media_id} failed with a real upstream error "
+            f"({error_type}: {detail}) — this is NOT a bad id."
+        )
+    return {
+        "error_type": error_type,
+        "message": f"{prefix} {cause} {fallback_hint}",
+        "retryable": error.get("retryable", False) if isinstance(error, dict) else False,
+    }
 
 
 def _build_gallery_slide(credentials: dict, slide: dict):
-    """Normalize one caller-supplied slide into the CMS gallery item shape.
+    """Normalize one caller-supplied slide into the CMS image-slide item shape used by
+    BOTH Gallery (content.data.gallery[]) and Web Story (content.data.web_story[]) — the
+    two share an identical slide structure.
 
-    The dashboard 'Gallery Slides' editor and the public render path both read
-    content.data.gallery[] where each item is
-    {type, img_src, title, desc, alt_text, caption_text}. img_src is the relative
-    media path — a caller may pass it directly (or a full CDN URL, normalized), or a
-    numeric media id which is resolved here. Returns (item, error); exactly one is non-None.
+    img_src is the relative media path — a caller may pass it directly (or a full CDN URL,
+    normalized), or a numeric media id which is resolved here. Optional text fields
+    (title/desc/alt_text/caption_text) are emitted ONLY when non-empty, matching what the
+    dashboard actually writes (real slides omit empty keys rather than storing ""/null).
+    Returns (item, error); exactly one is non-None.
     """
     img_src = slide.get("img_src")
     if not img_src:
         media_id = slide.get("id", slide.get("media_id"))
         if media_id is not None:
-            img_src = _resolve_media_url(credentials, media_id)
-            if not img_src:
-                return None, {
-                    "error_type": "bad_request",
-                    "message": (
-                        f"Could not resolve media id {media_id} to a URL. "
-                        "Pass img_src (the media path) directly, or verify the media id "
-                        "via get_media_asset/list_media_assets."
-                    ),
-                    "retryable": False,
-                }
+            img_src, err = _resolve_media_url(credentials, media_id)
+            if err is not None:
+                return None, _resolve_media_error_message(
+                    "Slide image could not be set:",
+                    media_id,
+                    err,
+                    "Alternatively pass img_src (the media path) directly.",
+                )
     if not img_src:
         return None, {
             "error_type": "bad_request",
-            "message": "Each gallery slide requires img_src (the media path) or a numeric media id.",
+            "message": "Each slide requires img_src (the media path) or a numeric media id.",
             "retryable": False,
         }
-    return {
-        "type":         slide.get("type", "Image"),
-        "img_src":      _normalize_img_src(img_src),
-        "title":        slide.get("title", ""),
-        "desc":         slide.get("desc", slide.get("description", "")),
-        "alt_text":     slide.get("alt_text", ""),
-        "caption_text": slide.get("caption_text"),
-    }, None
+    item = {
+        "type":    slide.get("type", "Image"),
+        "img_src": _normalize_img_src(img_src),
+    }
+    # Only include optional text fields when they actually carry a value — this matches the
+    # dashboard-written shape, which omits empty desc/caption_text/title/alt_text entirely.
+    for src_key, out_key in (("title", "title"), ("desc", "desc"), ("alt_text", "alt_text"),
+                             ("caption_text", "caption_text")):
+        value = slide.get(src_key)
+        if src_key == "desc" and not value:
+            value = slide.get("description")
+        if value:
+            item[out_key] = value
+    return item, None
 
 
-def _build_gallery_content(credentials: dict, slides: list, content_html: str = ""):
-    """Serialize gallery slides into the content JSON STRING the CMS stores under
-    content.data.gallery (what both the public page and the dashboard editor read).
-    Returns (content_string, error); exactly one is non-None.
+def _build_slide_content(credentials: dict, slides: list, data_key: str, content_html: str = ""):
+    """Serialize image slides into the content JSON STRING the CMS stores under
+    content.data.<data_key> — 'gallery' for Gallery posts, 'web_story' for Web Story posts
+    (both read by the dashboard editor and the public page). Returns (content_string, error);
+    exactly one is non-None.
     """
     items = []
     for slide in slides:
         if not isinstance(slide, dict):
             return None, {
                 "error_type": "bad_request",
-                "message": "Each gallery_images entry must be an object with img_src (or a media id) and optional title/desc/alt_text/caption_text.",
+                "message": f"Each {data_key} slide must be an object with img_src (or a media id) and optional title/desc/alt_text/caption_text.",
                 "retryable": False,
             }
         item, err = _build_gallery_slide(credentials, slide)
         if err is not None:
             return None, err
         items.append(item)
-    blob = {"data": {"gallery": items, "web_story": None}, "content_html": content_html or ""}
+    # Match exactly what the dashboard / public page read & write: just {"data": {<key>: [...]}}.
+    # No unconditional "web_story": null, no top-level "content_html" unless body HTML was given.
+    blob = {"data": {data_key: items}}
+    if content_html:
+        blob["content_html"] = content_html
     return json.dumps(blob, ensure_ascii=False), None
+
+
+def _build_gallery_content(credentials: dict, slides: list, content_html: str = ""):
+    """Serialize Gallery slides into content.data.gallery (see _build_slide_content)."""
+    return _build_slide_content(credentials, slides, "gallery", content_html)
+
+
+def _build_web_story_content(credentials: dict, slides: list, content_html: str = ""):
+    """Serialize Web Story slides into content.data.web_story (see _build_slide_content).
+
+    Real Web Story posts store the SAME image-slide structure as Gallery, keyed 'web_story'
+    instead of 'gallery' — NOT hand-written AMP markup."""
+    return _build_slide_content(credentials, slides, "web_story", content_html)
 
 
 def _resolve_banner_url(credentials: dict, value):
     """Resolve a featured-image reference to the relative media path the CMS stores
     (e.g. 'odishatv/media/media_files/foo.jpg') — the form the dashboard's featured-image
     widget reads. Accepts a numeric media id (resolved via the media library), a relative
-    path, or a full CDN URL. Returns (resolved, error); exactly one is non-None.
+    path, or a full CDN URL (normalized). Returns (resolved, error); exactly one is non-None.
 
-    A numeric media id that cannot be resolved is a hard error: forwarding the bare id to
-    the CMS only yields the opaque 'Banner URL must be a valid media object ID' rejection,
-    so we surface an actionable message instead.
+    A numeric media id that fails to resolve is a hard error: forwarding the bare id to the
+    CMS only yields the opaque 'Banner URL must be a valid media object ID' rejection, so we
+    surface the REAL cause instead (a wrong id vs. an auth/permission/timeout failure).
     """
     if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
-        path = _resolve_media_url(credentials, int(value))
-        if not path:
-            return None, {
-                "error_type": "bad_request",
-                "message": (
-                    f"Could not resolve media id {value} to a media path for banner_url. "
-                    "Verify the id via get_media_asset or list_media_assets (use the 'id' field), "
-                    "or pass banner_url as the relative media path directly "
-                    "(e.g. 'odishatv/media/media_files/foo.jpg')."
-                ),
-                "retryable": False,
-            }
+        path, err = _resolve_media_url(credentials, int(value))
+        if err is not None:
+            return None, _resolve_media_error_message(
+                "Featured image (banner_url) could not be set:",
+                value,
+                err,
+                "Alternatively pass banner_url as the relative media path directly "
+                "(e.g. 'odishatv/media/media_files/foo.jpg').",
+            )
         return _normalize_img_src(path), None
     if isinstance(value, str):
         return _normalize_img_src(value), None
@@ -142,6 +235,9 @@ def _resolve_banner_url(credentials: dict, value):
 
 
 def _coerce_post_int_fields(payload: dict) -> None:
+    # NOTE: banner_url is intentionally NOT coerced here. It is stored as the relative media
+    # path the dashboard's featured-image widget reads (resolved upstream by
+    # _resolve_banner_url); casting it to int would corrupt that path.
     for field in ("primary_category", "after_para"):
         if field in payload:
             with contextlib.suppress(ValueError, TypeError):
@@ -181,8 +277,11 @@ def _remap_post_type_error(result: dict, post_type: str) -> dict:
 
 _NO_DATA_TYPE_HINTS = {
     "Web Story": (
-        "Web Story posts require valid AMP story slide markup in the 'content' field. "
-        "Create the post via the Publive dashboard first, then update other fields via update_post."
+        "Web Story posts require slides. Pass web_story_images as an array of "
+        "{img_src (media path) OR id (numeric media id), title, desc, alt_text} — the tool serializes "
+        "these into content.data.web_story, the image-slide shape the dashboard and public page read "
+        "(a real Web Story is image slides, NOT AMP markup). Alternatively pass raw AMP story markup "
+        "in the 'content' field."
     ),
     "Gallery": (
         "Gallery posts require slides. Pass gallery_images as an array of "
@@ -270,13 +369,24 @@ class CmsPostsTools(CmsToolModule):
             "english_title must be plain English text matching the title, NOT a pre-slugified string. "
             "TYPE-SPECIFIC REQUIREMENTS — do NOT attempt to create these without the noted fields: "
             "Video: requires meta_video_embed (the raw <iframe> embed HTML, e.g. a YouTube/Vimeo embed); optionally also meta_video_url (the video page URL). Both are merged into meta_data automatically. "
-            "Web Story: requires AMP story slide markup in the content field AND meta_landscape_thumbnail (numeric media ID integer from the Publive media library, e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset). "
+            "Web Story: pass web_story_images — an array of image slides, each {img_src (media path) OR id (numeric media id from "
+            "list_media_assets/get_media_asset), title, desc, alt_text}. The tool serializes these into content.data.web_story — the "
+            "exact image-slide shape the dashboard AND public page read (a real Web Story is image slides, NOT hand-written AMP markup). "
+            "Alternatively, for an AMP-template Web Story, pass raw AMP story slide markup in the content field instead. "
+            "meta_landscape_thumbnail (numeric media ID, e.g. 295255 — the 'id' from list_media_assets/get_media_asset) is OPTIONAL. "
             "Gallery: pass gallery_images — an array of slides, each {img_src (media path) OR id (numeric media id from "
             "list_media_assets/get_media_asset), title, desc, alt_text, caption_text}. The tool serializes these into the "
             "content field as content.data.gallery — the exact shape the dashboard 'Gallery Slides' editor AND the public "
             "page both read. (Do NOT hand-build the content string; prefer gallery_images so editor and site stay in sync.) "
             "Also takes after_para (integer, default 0). NOTE: an empty gallery (no slides) creates fine as a Draft but FAILS to publish. "
             "Article, LiveBlog, CustomPage: no extra required fields beyond the six standard ones. "
+            "MEDIA SOURCING for banner_url / gallery img_src: pass a relative Publive media path "
+            "(e.g. 'odishatv/media/media_files/foo.jpg') or a numeric media id from "
+            "list_media_assets/get_media_asset. Use register_media_asset ONLY for assets ALREADY hosted "
+            "at a stable, permanent URL OUTSIDE Publive — it merely records that external URL and will NOT "
+            "produce a usable img_src/banner_url path for files that need to live on Publive's own storage. "
+            "(This MCP server has no file-upload tool; upload via the Publive dashboard to get a real "
+            "'odishatv/media/...' storage key.) "
             "DRAFT posts (status=Draft): created immediately — no preview/confirmation step. "
             "PUBLISHED/SCHEDULED/APPROVAL PENDING posts: dry_run=true (default) returns a preview of exactly "
             "what will be created and requests confirmation — NO post (not even a draft) is written on this call. "
@@ -294,7 +404,7 @@ class CmsPostsTools(CmsToolModule):
                 "status":              {"type": "string", "minLength": 1,  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "Primary category ID"},
                 "contributors":        {"type": "string", "minLength": 1,  "description": "REQUIRED — comma-separated author IDs (e.g. '12' or '12,15')."},
-                "content":             {"type": "string",  "description": "HTML body content. For Gallery posts prefer gallery_images instead — if you do pass content for a Gallery it must be a JSON string of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
+                "content":             {"type": "string",  "description": "HTML body content. For Gallery posts prefer gallery_images instead — if you do pass content for a Gallery it must be a JSON string of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<media path>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}]}} (the exact shape the dashboard writes — NO \"web_story\" key, NO top-level \"content_html\" unless you actually have body HTML)."},
                 "gallery_images":      {"type": "array",   "description": "Gallery posts only — slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text, caption_text.",
                                         "items": {"type": "object", "properties": {
                                             "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/media_files/foo.jpg'). A full CDN URL is also accepted and normalized to the path automatically."},
@@ -303,7 +413,16 @@ class CmsPostsTools(CmsToolModule):
                                             "title":        {"type": "string",  "description": "Slide title."},
                                             "desc":         {"type": "string",  "description": "Slide description text."},
                                             "alt_text":     {"type": "string",  "description": "Image alt text."},
-                                            "caption_text": {"type": "string",  "description": "Caption text (defaults to null)."},
+                                            "caption_text": {"type": "string",  "description": "Caption text. Omitted from the stored slide when empty."},
+                                        }}},
+                "web_story_images":    {"type": "array",   "description": "Web Story posts only — image slides, serialized into content.data.web_story (the image-slide shape the dashboard and public page read; a real Web Story is image slides, NOT AMP markup). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text.",
+                                        "items": {"type": "object", "properties": {
+                                            "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/post_attachments/uploadimage/library/16_9/16_9_0/foo.jpg'). A full CDN URL is also accepted and normalized."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to the media path automatically)."},
+                                            "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
+                                            "title":        {"type": "string",  "description": "Slide title."},
+                                            "desc":         {"type": "string",  "description": "Slide description text."},
+                                            "alt_text":     {"type": "string",  "description": "Image alt text."},
                                         }}},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated additional category IDs"},
@@ -318,7 +437,7 @@ class CmsPostsTools(CmsToolModule):
                 "custom_published_at":      {"type": "string",  "description": "Backdated publish timestamp ISO 8601. Immutable after creation."},
                 "meta_video_url":           {"type": "string",  "description": "Video post only — URL of the video page (e.g. YouTube/Vimeo URL). Merged into meta_data. Immutable after creation."},
                 "meta_video_embed":         {"type": "string",  "description": "Video post only (REQUIRED for Video) — raw <iframe> embed HTML for the video (e.g. a YouTube/Vimeo embed). Merged into meta_data. Immutable after creation."},
-                "meta_landscape_thumbnail": {"type": "integer", "description": "Web Story only — numeric media ID of the landscape thumbnail image (e.g. 295255). Retrieve the ID from get_media_asset or list_media_assets (use the 'id' field, NOT the path). Merged into meta_data. Immutable after creation."},
+                "meta_landscape_thumbnail": {"type": "integer", "description": "Web Story only (OPTIONAL) — numeric media ID of the landscape thumbnail image (e.g. 295255). Retrieve the ID from get_media_asset or list_media_assets (use the 'id' field, NOT the path). Merged into meta_data. Immutable after creation."},
                 "after_para":              {"type": "integer", "description": "Gallery/Article — paragraph position for injecting content. Defaults to 0 automatically for both Gallery and Article posts if not provided (the CMS requires it but has no default of its own)."},
                 "meta_data":               {"type": "object",  "description": "Arbitrary key-value metadata (e.g. access_type). Merged with any type-specific meta fields above. Immutable after creation."},
                 "dry_run":                 {"type": "boolean", "description": "true = preview only, no changes (default); false = create for real"},
@@ -349,12 +468,19 @@ class CmsPostsTools(CmsToolModule):
 
         post_type = payload.get("type", "")
 
-        # Gallery: serialize structured slides into the content blob the dashboard editor
-        # AND the public page read (content.data.gallery). gallery_images never goes to the
-        # API as a top-level field, so pop it here regardless of type.
-        gallery_images = payload.pop("gallery_images", None)
+        # Gallery / Web Story: serialize structured image slides into the content blob the
+        # dashboard editor AND public page read (content.data.gallery / content.data.web_story).
+        # These helper arrays never go to the API as top-level fields, so pop them regardless
+        # of type.
+        gallery_images   = payload.pop("gallery_images", None)
+        web_story_images = payload.pop("web_story_images", None)
         if post_type == "Gallery" and gallery_images:
             content_str, err = _build_gallery_content(credentials, gallery_images)
+            if err is not None:
+                return err
+            payload["content"] = content_str
+        if post_type == "Web Story" and web_story_images:
+            content_str, err = _build_web_story_content(credentials, web_story_images)
             if err is not None:
                 return err
             payload["content"] = content_str
@@ -382,20 +508,12 @@ class CmsPostsTools(CmsToolModule):
             return {
                 "error_type": "missing_required_field",
                 "message": (
-                    "Web Story posts require AMP story slide markup in the 'content' field "
-                    "and a numeric media ID in 'meta_landscape_thumbnail' "
-                    "(e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset, NOT the file path)."
-                ),
-                "retryable": False,
-            }
-        if post_type == "Web Story" and not (payload.get("meta_data") or {}).get("meta_landscape_thumbnail"):
-            return {
-                "error_type": "missing_required_field",
-                "message": (
-                    "Web Story posts require meta_landscape_thumbnail — the numeric media ID integer "
-                    "of the landscape thumbnail image (e.g. 295255). "
-                    "Call list_media_assets or get_media_asset to find the 'id' field of an image asset, "
-                    "then pass that integer as meta_landscape_thumbnail."
+                    "Web Story posts require slides. Pass web_story_images as an array of "
+                    "{img_src (media path) OR id (numeric media id), title, desc, alt_text}; "
+                    "the tool serializes them into content.data.web_story (the image-slide shape the "
+                    "dashboard and public page read — a real Web Story is image slides, NOT AMP markup). "
+                    "Alternatively pass raw AMP story markup in the 'content' field. "
+                    "meta_landscape_thumbnail is optional."
                 ),
                 "retryable": False,
             }
@@ -496,6 +614,11 @@ class CmsPostsTools(CmsToolModule):
             "DRAFT POSTS: if the post is currently a Draft (or you are setting status=Draft), the update applies immediately — no dry_run step. "
             "LIVE POSTS (Published, Scheduled, Approval Pending — including edits to an already-live post): dry_run=true (default) shows a field-by-field diff — no changes made. "
             "PUBLISHING (status=Published): also requires confirm_publish=true together with dry_run=false. "
+            "MEDIA SOURCING for banner_url / gallery img_src: pass a relative Publive media path "
+            "(e.g. 'odishatv/media/media_files/foo.jpg') or a numeric media id from "
+            "list_media_assets/get_media_asset. Use register_media_asset ONLY for assets ALREADY hosted at a "
+            "stable, permanent URL OUTSIDE Publive — it will NOT produce a usable img_src/banner_url path for "
+            "files that need to live on Publive's own storage. "
             "Cannot be changed after creation: english_title, type, slug."
         ),
         inputSchema={
@@ -504,7 +627,7 @@ class CmsPostsTools(CmsToolModule):
             "properties": {
                 "id":                  {"type": "integer", "description": "Post ID"},
                 "title":               {"type": "string",  "description": "New post headline"},
-                "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts prefer gallery_images; a raw content string must be JSON of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
+                "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts prefer gallery_images; a raw content string must be JSON of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<media path>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}]}} (the exact shape the dashboard writes — NO \"web_story\" key, NO top-level \"content_html\" unless you actually have body HTML)."},
                 "gallery_images":      {"type": "array",   "description": "Gallery posts only — replacement slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text, caption_text.",
                                         "items": {"type": "object", "properties": {
                                             "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/media_files/foo.jpg'). A full CDN URL is also accepted and normalized to the path automatically."},
@@ -513,7 +636,16 @@ class CmsPostsTools(CmsToolModule):
                                             "title":        {"type": "string",  "description": "Slide title."},
                                             "desc":         {"type": "string",  "description": "Slide description text."},
                                             "alt_text":     {"type": "string",  "description": "Image alt text."},
-                                            "caption_text": {"type": "string",  "description": "Caption text (defaults to null)."},
+                                            "caption_text": {"type": "string",  "description": "Caption text. Omitted from the stored slide when empty."},
+                                        }}},
+                "web_story_images":    {"type": "array",   "description": "Web Story posts only — replacement image slides, serialized into content.data.web_story (the image-slide shape the dashboard and public page read; a real Web Story is image slides, NOT AMP markup). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text.",
+                                        "items": {"type": "object", "properties": {
+                                            "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/post_attachments/uploadimage/library/16_9/16_9_0/foo.jpg'). A full CDN URL is also accepted and normalized."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to the media path automatically)."},
+                                            "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
+                                            "title":        {"type": "string",  "description": "Slide title."},
+                                            "desc":         {"type": "string",  "description": "Slide description text."},
+                                            "alt_text":     {"type": "string",  "description": "Image alt text."},
                                         }}},
                 "status":              {"type": "string",  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "New primary category ID"},
@@ -536,12 +668,18 @@ class CmsPostsTools(CmsToolModule):
         post_id         = args["id"]
         changes         = {k: v for k, v in args.items() if k not in ("id", "dry_run", "confirm_publish") and v is not None and v != ""}
 
-        # Gallery: serialize structured slides into content.data.gallery (the blob the
-        # dashboard editor and public page both read) before the diff/patch. gallery_images
-        # is never sent to the API as a top-level field.
-        gallery_images = changes.pop("gallery_images", None)
+        # Gallery / Web Story: serialize structured image slides into content.data.gallery /
+        # content.data.web_story (the blob the dashboard editor and public page read) before
+        # the diff/patch. These helper arrays are never sent to the API as top-level fields.
+        gallery_images   = changes.pop("gallery_images", None)
+        web_story_images = changes.pop("web_story_images", None)
         if gallery_images:
             content_str, err = _build_gallery_content(credentials, gallery_images)
+            if err is not None:
+                return err
+            changes["content"] = content_str
+        if web_story_images:
+            content_str, err = _build_web_story_content(credentials, web_story_images)
             if err is not None:
                 return err
             changes["content"] = content_str
