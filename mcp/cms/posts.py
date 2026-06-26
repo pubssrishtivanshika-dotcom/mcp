@@ -209,36 +209,42 @@ def _build_web_story_content(credentials: dict, slides: list, content_html: str 
 
 
 def _resolve_banner_url(credentials: dict, value):
-    """Resolve a featured-image reference to the relative media path the CMS stores
-    (e.g. 'odishatv/media/media_files/foo.jpg') — the form the dashboard's featured-image
-    widget reads. Accepts a numeric media id (resolved via the media library), a relative
-    path, or a full CDN URL (normalized). Returns (resolved, error); exactly one is non-None.
-
-    A numeric media id that fails to resolve is a hard error: forwarding the bare id to the
-    CMS only yields the opaque 'Banner URL must be a valid media object ID' rejection, so we
-    surface the REAL cause instead (a wrong id vs. an auth/permission/timeout failure).
+    """Resolve a featured-image reference to the media-library object ID the CMS's
+    banner_url field requires. The CMS stores banner_url as the integer media object id —
+    it rejects a path or URL with 'Banner URL must be a valid media object ID'. We accept a
+    numeric id (validated against the media library so a wrong id surfaces the REAL cause —
+    a wrong id vs. an auth/permission/timeout failure — instead of that opaque rejection)
+    and return it as an int. Returns (resolved, error); exactly one is non-None.
     """
     if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
-        path, err = _resolve_media_url(credentials, int(value))
+        media_id = int(value)
+        _, err = _resolve_media_url(credentials, media_id)  # existence/permission check only
         if err is not None:
             return None, _resolve_media_error_message(
                 "Featured image (banner_url) could not be set:",
-                value,
+                media_id,
                 err,
-                "Alternatively pass banner_url as the relative media path directly "
-                "(e.g. 'odishatv/media/media_files/foo.jpg').",
+                "banner_url must be a numeric media object id — get it from "
+                "get_media_asset / list_media_assets (the 'id' field).",
             )
-        return _normalize_img_src(path), None
-    if isinstance(value, str):
-        return _normalize_img_src(value), None
-    return value, None
+        return media_id, None
+    # The CMS banner_url field only accepts a media object id; a path/URL string is rejected
+    # upstream as 'must be a valid media object ID', so we reject it here with a clear cause.
+    return None, {
+        "error_type": "bad_request",
+        "message": (
+            "banner_url must be a numeric media object id (the 'id' from "
+            "get_media_asset / list_media_assets), not a path or URL."
+        ),
+        "retryable": False,
+    }
 
 
 def _coerce_post_int_fields(payload: dict) -> None:
-    # NOTE: banner_url is intentionally NOT coerced here. It is stored as the relative media
-    # path the dashboard's featured-image widget reads (resolved upstream by
-    # _resolve_banner_url); casting it to int would corrupt that path.
-    for field in ("primary_category", "after_para"):
+    # banner_url is the integer media-library object id the CMS's featured-image field
+    # requires (resolved/validated upstream by _resolve_banner_url, which already returns an
+    # int); listed here so a digit-string id passed straight through is also coerced.
+    for field in ("primary_category", "banner_url", "after_para"):
         if field in payload:
             with contextlib.suppress(ValueError, TypeError):
                 payload[field] = int(payload[field])
@@ -426,7 +432,7 @@ class CmsPostsTools(CmsToolModule):
                                         }}},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated additional category IDs"},
-                "banner_url":          {"type": ["integer", "string"], "description": "Featured image. Pass a numeric media id (resolved to its media path automatically), the relative media path (e.g. 'odishatv/media/media_files/foo.jpg'), or a full CDN URL. Stored as the relative path the dashboard's featured-image widget reads."},
+                "banner_url":          {"type": ["integer", "string"], "description": "Featured image — the numeric media-library object id (the 'id' from get_media_asset / list_media_assets). The CMS stores this as the media object id, NOT a path or URL; passing a path/URL is rejected with 'Banner URL must be a valid media object ID'."},
                 "banner_description":  {"type": "string",  "description": "Featured image caption"},
                 "short_description":   {"type": "string",  "description": "SEO meta description"},
                 "summary":             {"type": "string",  "description": "Post summary"},
@@ -485,8 +491,9 @@ class CmsPostsTools(CmsToolModule):
                 return err
             payload["content"] = content_str
 
-        # Featured image: store as the relative media path the dashboard's featured-image
-        # widget reads (a bare media id renders publicly but stays blank in the editor).
+        # Featured image: the CMS banner_url field stores the media-library object id (an
+        # integer). _resolve_banner_url validates the id and returns it as an int; a path or
+        # URL is rejected upstream as 'Banner URL must be a valid media object ID'.
         if payload.get("banner_url") is not None:
             resolved, err = _resolve_banner_url(credentials, payload["banner_url"])
             if err is not None:
@@ -652,7 +659,7 @@ class CmsPostsTools(CmsToolModule):
                 "contributors":        {"type": "string",  "description": "Comma-separated author IDs"},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated category IDs"},
-                "banner_url":          {"type": ["integer", "string"], "description": "New featured image. Pass a numeric media id (resolved to its media path automatically), the relative media path, or a full CDN URL. Stored as the relative path the dashboard's featured-image widget reads."},
+                "banner_url":          {"type": ["integer", "string"], "description": "New featured image — the numeric media-library object id (the 'id' from get_media_asset / list_media_assets). The CMS stores this as the media object id, NOT a path or URL; passing a path/URL is rejected with 'Banner URL must be a valid media object ID'."},
                 "short_description":   {"type": "string",  "description": "New SEO meta description"},
                 "hide_banner_image":   {"type": "boolean", "description": "Hide the featured image"},
                 "custom_published_at": {"type": "string",  "description": "Backdated publish timestamp ISO 8601"},
@@ -684,7 +691,7 @@ class CmsPostsTools(CmsToolModule):
                 return err
             changes["content"] = content_str
 
-        # Featured image: store as the relative media path the dashboard widget reads.
+        # Featured image: the CMS banner_url field stores the media-library object id (int).
         if changes.get("banner_url") is not None:
             resolved, err = _resolve_banner_url(credentials, changes["banner_url"])
             if err is not None:
