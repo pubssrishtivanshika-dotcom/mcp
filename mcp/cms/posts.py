@@ -13,15 +13,42 @@ logger = logging.getLogger(__name__)
 _path_for = "/post/{}/".format
 
 
+def _normalize_img_src(value):
+    """Reduce a media reference to the bare relative storage key the CMS gallery stores
+    (e.g. 'odishatv/media/media_files/foo.jpg').
+
+    The dashboard stores img_src as a relative path, NOT a full CDN URL. This accepts
+    either form: a relative key is returned unchanged; a full CDN URL is stripped of its
+    scheme+host and any thumbor-style transform prefix ('fit-in/<dims>/', 'filters:.../').
+    """
+    if not isinstance(value, str) or not value.strip():
+        return value
+    v = value.strip()
+    if v.startswith(("http://", "https://")):
+        rest = v.split("://", 1)[1]
+        v = rest.split("/", 1)[1] if "/" in rest else ""
+    segs = v.lstrip("/").split("/")
+    if segs and segs[0] == "fit-in":
+        segs.pop(0)            # 'fit-in'
+        if segs:
+            segs.pop(0)        # dimensions, e.g. '640x480'
+    while segs and segs[0].startswith("filters:"):
+        segs.pop(0)
+    return "/".join(segs)
+
+
 def _resolve_media_url(credentials: dict, media_id):
-    """Resolve a CMS media-library id to its absolute image URL. Returns None on failure."""
+    """Resolve a CMS media-library id to the relative storage path the gallery stores
+    (e.g. 'odishatv/media/media_files/foo.jpg'). Returns None on failure."""
     raw = cms_client.get(credentials, f"/media-library/{media_id}/")
     if not isinstance(raw, dict) or raw.get("error_type"):
         return None
     data = raw.get("data", raw) if isinstance(raw, dict) else raw
     if not isinstance(data, dict):
         return None
-    return data.get("absolute_path") or data.get("path")
+    # Prefer the relative 'path' (the storage key the writer expects); fall back to
+    # absolute_path and normalize it back down to the relative key.
+    return data.get("path") or data.get("absolute_path")
 
 
 def _build_gallery_slide(credentials: dict, slide: dict):
@@ -29,9 +56,9 @@ def _build_gallery_slide(credentials: dict, slide: dict):
 
     The dashboard 'Gallery Slides' editor and the public render path both read
     content.data.gallery[] where each item is
-    {type, img_src, title, desc, alt_text, caption_text}. img_src is a URL — a
-    caller may pass it directly, or pass a numeric media id which is resolved here.
-    Returns (item, error); exactly one is non-None.
+    {type, img_src, title, desc, alt_text, caption_text}. img_src is the relative
+    media path — a caller may pass it directly (or a full CDN URL, normalized), or a
+    numeric media id which is resolved here. Returns (item, error); exactly one is non-None.
     """
     img_src = slide.get("img_src")
     if not img_src:
@@ -43,7 +70,7 @@ def _build_gallery_slide(credentials: dict, slide: dict):
                     "error_type": "bad_request",
                     "message": (
                         f"Could not resolve media id {media_id} to a URL. "
-                        "Pass img_src (the media URL) directly, or verify the media id "
+                        "Pass img_src (the media path) directly, or verify the media id "
                         "via get_media_asset/list_media_assets."
                     ),
                     "retryable": False,
@@ -51,12 +78,12 @@ def _build_gallery_slide(credentials: dict, slide: dict):
     if not img_src:
         return None, {
             "error_type": "bad_request",
-            "message": "Each gallery slide requires img_src (a media URL) or a numeric media id.",
+            "message": "Each gallery slide requires img_src (the media path) or a numeric media id.",
             "retryable": False,
         }
     return {
         "type":         slide.get("type", "Image"),
-        "img_src":      img_src,
+        "img_src":      _normalize_img_src(img_src),
         "title":        slide.get("title", ""),
         "desc":         slide.get("desc", slide.get("description", "")),
         "alt_text":     slide.get("alt_text", ""),
@@ -130,7 +157,7 @@ _NO_DATA_TYPE_HINTS = {
     ),
     "Gallery": (
         "Gallery posts require slides. Pass gallery_images as an array of "
-        "{img_src (media URL) OR id (numeric media id), title, desc, alt_text, caption_text} — "
+        "{img_src (media path) OR id (numeric media id), title, desc, alt_text, caption_text} — "
         "the tool serializes these into content.data.gallery, the shape the dashboard 'Gallery Slides' "
         "editor and the public page both read. An empty gallery creates as a Draft but cannot be published."
     ),
@@ -215,7 +242,7 @@ class CmsPostsTools(CmsToolModule):
             "TYPE-SPECIFIC REQUIREMENTS — do NOT attempt to create these without the noted fields: "
             "Video: requires meta_video_embed (the raw <iframe> embed HTML, e.g. a YouTube/Vimeo embed); optionally also meta_video_url (the video page URL). Both are merged into meta_data automatically. "
             "Web Story: requires AMP story slide markup in the content field AND meta_landscape_thumbnail (numeric media ID integer from the Publive media library, e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset). "
-            "Gallery: pass gallery_images — an array of slides, each {img_src (media URL) OR id (numeric media id from "
+            "Gallery: pass gallery_images — an array of slides, each {img_src (media path) OR id (numeric media id from "
             "list_media_assets/get_media_asset), title, desc, alt_text, caption_text}. The tool serializes these into the "
             "content field as content.data.gallery — the exact shape the dashboard 'Gallery Slides' editor AND the public "
             "page both read. (Do NOT hand-build the content string; prefer gallery_images so editor and site stay in sync.) "
@@ -239,10 +266,10 @@ class CmsPostsTools(CmsToolModule):
                 "primary_category":    {"type": "integer", "description": "Primary category ID"},
                 "contributors":        {"type": "string", "minLength": 1,  "description": "REQUIRED — comma-separated author IDs (e.g. '12' or '12,15')."},
                 "content":             {"type": "string",  "description": "HTML body content. For Gallery posts prefer gallery_images instead — if you do pass content for a Gallery it must be a JSON string of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
-                "gallery_images":      {"type": "array",   "description": "Gallery posts only — slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (media URL) OR id (numeric media id, resolved to a URL automatically); plus optional title, desc, alt_text, caption_text.",
+                "gallery_images":      {"type": "array",   "description": "Gallery posts only — slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text, caption_text.",
                                         "items": {"type": "object", "properties": {
-                                            "img_src":      {"type": "string",  "description": "Direct media URL for the slide image."},
-                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to a URL automatically)."},
+                                            "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/media_files/foo.jpg'). A full CDN URL is also accepted and normalized to the path automatically."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to the media path automatically)."},
                                             "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
                                             "title":        {"type": "string",  "description": "Slide title."},
                                             "desc":         {"type": "string",  "description": "Slide description text."},
@@ -340,7 +367,7 @@ class CmsPostsTools(CmsToolModule):
                 "error_type": "missing_required_field",
                 "message": (
                     "Gallery posts require slides. Pass gallery_images as an array of "
-                    "{img_src (media URL) OR id (numeric media id), title, desc, alt_text, caption_text}; "
+                    "{img_src (media path) OR id (numeric media id), title, desc, alt_text, caption_text}; "
                     "the tool serializes them into content.data.gallery (the shape the dashboard 'Gallery Slides' "
                     "editor and the public page both read). An empty gallery creates as a Draft but cannot be published."
                 ),
@@ -441,10 +468,10 @@ class CmsPostsTools(CmsToolModule):
                 "id":                  {"type": "integer", "description": "Post ID"},
                 "title":               {"type": "string",  "description": "New post headline"},
                 "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts prefer gallery_images; a raw content string must be JSON of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
-                "gallery_images":      {"type": "array",   "description": "Gallery posts only — replacement slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (media URL) OR id (numeric media id, resolved to a URL automatically); plus optional title, desc, alt_text, caption_text.",
+                "gallery_images":      {"type": "array",   "description": "Gallery posts only — replacement slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (relative media path, or a full CDN URL which is normalized) OR id (numeric media id, resolved to the media path automatically); plus optional title, desc, alt_text, caption_text.",
                                         "items": {"type": "object", "properties": {
-                                            "img_src":      {"type": "string",  "description": "Direct media URL for the slide image."},
-                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to a URL automatically)."},
+                                            "img_src":      {"type": "string",  "description": "Slide image — the relative media path the CMS stores (e.g. 'odishatv/media/media_files/foo.jpg'). A full CDN URL is also accepted and normalized to the path automatically."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to the media path automatically)."},
                                             "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
                                             "title":        {"type": "string",  "description": "Slide title."},
                                             "desc":         {"type": "string",  "description": "Slide description text."},
