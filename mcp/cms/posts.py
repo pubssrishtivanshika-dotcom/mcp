@@ -116,15 +116,29 @@ def _resolve_banner_url(credentials: dict, value):
     """Resolve a featured-image reference to the relative media path the CMS stores
     (e.g. 'odishatv/media/media_files/foo.jpg') — the form the dashboard's featured-image
     widget reads. Accepts a numeric media id (resolved via the media library), a relative
-    path, or a full CDN URL. Best-effort: if a media id can't be resolved, the original
-    value is returned unchanged.
+    path, or a full CDN URL. Returns (resolved, error); exactly one is non-None.
+
+    A numeric media id that cannot be resolved is a hard error: forwarding the bare id to
+    the CMS only yields the opaque 'Banner URL must be a valid media object ID' rejection,
+    so we surface an actionable message instead.
     """
     if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
         path = _resolve_media_url(credentials, int(value))
-        return _normalize_img_src(path) if path else value
+        if not path:
+            return None, {
+                "error_type": "bad_request",
+                "message": (
+                    f"Could not resolve media id {value} to a media path for banner_url. "
+                    "Verify the id via get_media_asset or list_media_assets (use the 'id' field), "
+                    "or pass banner_url as the relative media path directly "
+                    "(e.g. 'odishatv/media/media_files/foo.jpg')."
+                ),
+                "retryable": False,
+            }
+        return _normalize_img_src(path), None
     if isinstance(value, str):
-        return _normalize_img_src(value)
-    return value
+        return _normalize_img_src(value), None
+    return value, None
 
 
 def _coerce_post_int_fields(payload: dict) -> None:
@@ -348,7 +362,10 @@ class CmsPostsTools(CmsToolModule):
         # Featured image: store as the relative media path the dashboard's featured-image
         # widget reads (a bare media id renders publicly but stays blank in the editor).
         if payload.get("banner_url") is not None:
-            payload["banner_url"] = _resolve_banner_url(credentials, payload["banner_url"])
+            resolved, err = _resolve_banner_url(credentials, payload["banner_url"])
+            if err is not None:
+                return err
+            payload["banner_url"] = resolved
 
         if post_type == "Video" and not (payload.get("meta_data") or {}).get("meta_video_embed"):
             return {
@@ -531,7 +548,10 @@ class CmsPostsTools(CmsToolModule):
 
         # Featured image: store as the relative media path the dashboard widget reads.
         if changes.get("banner_url") is not None:
-            changes["banner_url"] = _resolve_banner_url(credentials, changes["banner_url"])
+            resolved, err = _resolve_banner_url(credentials, changes["banner_url"])
+            if err is not None:
+                return err
+            changes["banner_url"] = resolved
 
         _coerce_post_int_fields(changes)
         _strip_list_brackets(changes)
