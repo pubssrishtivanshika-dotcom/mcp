@@ -1,4 +1,5 @@
 import contextlib
+import json
 import logging
 
 from mcp.clients.cms import cms_client
@@ -10,6 +11,78 @@ from mcp.cms.helpers import CmsToolModule
 logger = logging.getLogger(__name__)
 
 _path_for = "/post/{}/".format
+
+
+def _resolve_media_url(credentials: dict, media_id):
+    """Resolve a CMS media-library id to its absolute image URL. Returns None on failure."""
+    raw = cms_client.get(credentials, f"/media-library/{media_id}/")
+    if not isinstance(raw, dict) or raw.get("error_type"):
+        return None
+    data = raw.get("data", raw) if isinstance(raw, dict) else raw
+    if not isinstance(data, dict):
+        return None
+    return data.get("absolute_path") or data.get("path")
+
+
+def _build_gallery_slide(credentials: dict, slide: dict):
+    """Normalize one caller-supplied slide into the CMS gallery item shape.
+
+    The dashboard 'Gallery Slides' editor and the public render path both read
+    content.data.gallery[] where each item is
+    {type, img_src, title, desc, alt_text, caption_text}. img_src is a URL — a
+    caller may pass it directly, or pass a numeric media id which is resolved here.
+    Returns (item, error); exactly one is non-None.
+    """
+    img_src = slide.get("img_src")
+    if not img_src:
+        media_id = slide.get("id", slide.get("media_id"))
+        if media_id is not None:
+            img_src = _resolve_media_url(credentials, media_id)
+            if not img_src:
+                return None, {
+                    "error_type": "bad_request",
+                    "message": (
+                        f"Could not resolve media id {media_id} to a URL. "
+                        "Pass img_src (the media URL) directly, or verify the media id "
+                        "via get_media_asset/list_media_assets."
+                    ),
+                    "retryable": False,
+                }
+    if not img_src:
+        return None, {
+            "error_type": "bad_request",
+            "message": "Each gallery slide requires img_src (a media URL) or a numeric media id.",
+            "retryable": False,
+        }
+    return {
+        "type":         slide.get("type", "Image"),
+        "img_src":      img_src,
+        "title":        slide.get("title", ""),
+        "desc":         slide.get("desc", slide.get("description", "")),
+        "alt_text":     slide.get("alt_text", ""),
+        "caption_text": slide.get("caption_text"),
+    }, None
+
+
+def _build_gallery_content(credentials: dict, slides: list, content_html: str = ""):
+    """Serialize gallery slides into the content JSON STRING the CMS stores under
+    content.data.gallery (what both the public page and the dashboard editor read).
+    Returns (content_string, error); exactly one is non-None.
+    """
+    items = []
+    for slide in slides:
+        if not isinstance(slide, dict):
+            return None, {
+                "error_type": "bad_request",
+                "message": "Each gallery_images entry must be an object with img_src (or a media id) and optional title/desc/alt_text/caption_text.",
+                "retryable": False,
+            }
+        item, err = _build_gallery_slide(credentials, slide)
+        if err is not None:
+            return None, err
+        items.append(item)
+    blob = {"data": {"gallery": items, "web_story": None}, "content_html": content_html or ""}
+    return json.dumps(blob, ensure_ascii=False), None
 
 
 def _coerce_post_int_fields(payload: dict) -> None:
@@ -56,9 +129,10 @@ _NO_DATA_TYPE_HINTS = {
         "Create the post via the Publive dashboard first, then update other fields via update_post."
     ),
     "Gallery": (
-        "Gallery posts require image data in 'content' as a JSON string: "
-        "{\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, "
-        "\"content_html\": \"<p>...</p>\"} — each id is a numeric media ID from list_media_assets/get_media_asset."
+        "Gallery posts require slides. Pass gallery_images as an array of "
+        "{img_src (media URL) OR id (numeric media id), title, desc, alt_text, caption_text} — "
+        "the tool serializes these into content.data.gallery, the shape the dashboard 'Gallery Slides' "
+        "editor and the public page both read. An empty gallery creates as a Draft but cannot be published."
     ),
 }
 
@@ -141,11 +215,11 @@ class CmsPostsTools(CmsToolModule):
             "TYPE-SPECIFIC REQUIREMENTS — do NOT attempt to create these without the noted fields: "
             "Video: requires meta_video_embed (the raw <iframe> embed HTML, e.g. a YouTube/Vimeo embed); optionally also meta_video_url (the video page URL). Both are merged into meta_data automatically. "
             "Web Story: requires AMP story slide markup in the content field AND meta_landscape_thumbnail (numeric media ID integer from the Publive media library, e.g. 295255 — use the 'id' field from list_media_assets or get_media_asset). "
-            "Gallery: the content field must be a JSON STRING carrying the gallery's image data — "
-            "shape: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}, ...]}, \"content_html\": \"<p>...</p>\"} "
-            "where each id is a numeric media ID from list_media_assets/get_media_asset (use the 'id' field). "
-            "Also takes after_para (integer, default 0). NOTE: an empty gallery (no images in data) creates fine as a Draft but FAILS to publish "
-            "(the CMS returns 'No data provided', or HTTP 500 if content is plain HTML instead of the JSON shape above). "
+            "Gallery: pass gallery_images — an array of slides, each {img_src (media URL) OR id (numeric media id from "
+            "list_media_assets/get_media_asset), title, desc, alt_text, caption_text}. The tool serializes these into the "
+            "content field as content.data.gallery — the exact shape the dashboard 'Gallery Slides' editor AND the public "
+            "page both read. (Do NOT hand-build the content string; prefer gallery_images so editor and site stay in sync.) "
+            "Also takes after_para (integer, default 0). NOTE: an empty gallery (no slides) creates fine as a Draft but FAILS to publish. "
             "Article, LiveBlog, CustomPage: no extra required fields beyond the six standard ones. "
             "DRAFT posts (status=Draft): created immediately — no preview/confirmation step. "
             "PUBLISHED/SCHEDULED/APPROVAL PENDING posts: dry_run=true (default) returns a preview of exactly "
@@ -164,7 +238,17 @@ class CmsPostsTools(CmsToolModule):
                 "status":              {"type": "string", "minLength": 1,  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "Primary category ID"},
                 "contributors":        {"type": "string", "minLength": 1,  "description": "REQUIRED — comma-separated author IDs (e.g. '12' or '12,15')."},
-                "content":             {"type": "string",  "description": "HTML body content. For Gallery posts this must instead be a JSON string holding the image data: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, \"content_html\": \"<p>...</p>\"}."},
+                "content":             {"type": "string",  "description": "HTML body content. For Gallery posts prefer gallery_images instead — if you do pass content for a Gallery it must be a JSON string of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
+                "gallery_images":      {"type": "array",   "description": "Gallery posts only — slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (media URL) OR id (numeric media id, resolved to a URL automatically); plus optional title, desc, alt_text, caption_text.",
+                                        "items": {"type": "object", "properties": {
+                                            "img_src":      {"type": "string",  "description": "Direct media URL for the slide image."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to a URL automatically)."},
+                                            "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
+                                            "title":        {"type": "string",  "description": "Slide title."},
+                                            "desc":         {"type": "string",  "description": "Slide description text."},
+                                            "alt_text":     {"type": "string",  "description": "Image alt text."},
+                                            "caption_text": {"type": "string",  "description": "Caption text (defaults to null)."},
+                                        }}},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated additional category IDs"},
                 "banner_url":          {"type": "integer", "description": "Media ID for the featured image"},
@@ -208,6 +292,17 @@ class CmsPostsTools(CmsToolModule):
             payload["meta_data"] = {**existing_meta, **meta_extras}
 
         post_type = payload.get("type", "")
+
+        # Gallery: serialize structured slides into the content blob the dashboard editor
+        # AND the public page read (content.data.gallery). gallery_images never goes to the
+        # API as a top-level field, so pop it here regardless of type.
+        gallery_images = payload.pop("gallery_images", None)
+        if post_type == "Gallery" and gallery_images:
+            content_str, err = _build_gallery_content(credentials, gallery_images)
+            if err is not None:
+                return err
+            payload["content"] = content_str
+
         if post_type == "Video" and not (payload.get("meta_data") or {}).get("meta_video_embed"):
             return {
                 "error_type": "missing_required_field",
@@ -244,10 +339,10 @@ class CmsPostsTools(CmsToolModule):
             return {
                 "error_type": "missing_required_field",
                 "message": (
-                    "Gallery posts require image data in the 'content' field as a JSON string: "
-                    "{\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, "
-                    "\"content_html\": \"<p>...</p>\"} — each id is a numeric media ID from list_media_assets/get_media_asset. "
-                    "An empty gallery creates as a Draft but cannot be published."
+                    "Gallery posts require slides. Pass gallery_images as an array of "
+                    "{img_src (media URL) OR id (numeric media id), title, desc, alt_text, caption_text}; "
+                    "the tool serializes them into content.data.gallery (the shape the dashboard 'Gallery Slides' "
+                    "editor and the public page both read). An empty gallery creates as a Draft but cannot be published."
                 ),
                 "retryable": False,
             }
@@ -345,7 +440,17 @@ class CmsPostsTools(CmsToolModule):
             "properties": {
                 "id":                  {"type": "integer", "description": "Post ID"},
                 "title":               {"type": "string",  "description": "New post headline"},
-                "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts this must be a JSON string holding image data: {\"data\": {\"images\": [{\"id\": <media_id>, \"title\": \"...\", \"description\": \"...\"}]}, \"content_html\": \"<p>...</p>\"} — required (with image entries) to publish a Gallery."},
+                "content":             {"type": "string",  "description": "New HTML body content. For Gallery posts prefer gallery_images; a raw content string must be JSON of {\"data\": {\"gallery\": [{\"type\": \"Image\", \"img_src\": \"<url>\", \"title\": \"...\", \"desc\": \"...\", \"alt_text\": \"...\", \"caption_text\": null}], \"web_story\": null}, \"content_html\": \"\"}."},
+                "gallery_images":      {"type": "array",   "description": "Gallery posts only — replacement slides, serialized into content.data.gallery (the shape the dashboard 'Gallery Slides' editor and the public page both read). Preferred over a raw content string. Each item: img_src (media URL) OR id (numeric media id, resolved to a URL automatically); plus optional title, desc, alt_text, caption_text.",
+                                        "items": {"type": "object", "properties": {
+                                            "img_src":      {"type": "string",  "description": "Direct media URL for the slide image."},
+                                            "id":           {"type": "integer", "description": "Numeric media id (alternative to img_src; resolved to a URL automatically)."},
+                                            "type":         {"type": "string",  "description": "Slide type — defaults to 'Image'."},
+                                            "title":        {"type": "string",  "description": "Slide title."},
+                                            "desc":         {"type": "string",  "description": "Slide description text."},
+                                            "alt_text":     {"type": "string",  "description": "Image alt text."},
+                                            "caption_text": {"type": "string",  "description": "Caption text (defaults to null)."},
+                                        }}},
                 "status":              {"type": "string",  "description": "Draft, Published, Scheduled, or Approval Pending"},
                 "primary_category":    {"type": "integer", "description": "New primary category ID"},
                 "contributors":        {"type": "string",  "description": "Comma-separated author IDs"},
@@ -366,6 +471,16 @@ class CmsPostsTools(CmsToolModule):
         confirm_publish = args.get("confirm_publish", False)
         post_id         = args["id"]
         changes         = {k: v for k, v in args.items() if k not in ("id", "dry_run", "confirm_publish") and v is not None and v != ""}
+
+        # Gallery: serialize structured slides into content.data.gallery (the blob the
+        # dashboard editor and public page both read) before the diff/patch. gallery_images
+        # is never sent to the API as a top-level field.
+        gallery_images = changes.pop("gallery_images", None)
+        if gallery_images:
+            content_str, err = _build_gallery_content(credentials, gallery_images)
+            if err is not None:
+                return err
+            changes["content"] = content_str
 
         _coerce_post_int_fields(changes)
         _strip_list_brackets(changes)
