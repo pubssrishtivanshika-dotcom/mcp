@@ -112,8 +112,23 @@ def _build_gallery_content(credentials: dict, slides: list, content_html: str = 
     return json.dumps(blob, ensure_ascii=False), None
 
 
+def _resolve_banner_url(credentials: dict, value):
+    """Resolve a featured-image reference to the relative media path the CMS stores
+    (e.g. 'odishatv/media/media_files/foo.jpg') — the form the dashboard's featured-image
+    widget reads. Accepts a numeric media id (resolved via the media library), a relative
+    path, or a full CDN URL. Best-effort: if a media id can't be resolved, the original
+    value is returned unchanged.
+    """
+    if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
+        path = _resolve_media_url(credentials, int(value))
+        return _normalize_img_src(path) if path else value
+    if isinstance(value, str):
+        return _normalize_img_src(value)
+    return value
+
+
 def _coerce_post_int_fields(payload: dict) -> None:
-    for field in ("primary_category", "banner_url", "after_para"):
+    for field in ("primary_category", "after_para"):
         if field in payload:
             with contextlib.suppress(ValueError, TypeError):
                 payload[field] = int(payload[field])
@@ -278,7 +293,7 @@ class CmsPostsTools(CmsToolModule):
                                         }}},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated additional category IDs"},
-                "banner_url":          {"type": "integer", "description": "Media ID for the featured image"},
+                "banner_url":          {"type": ["integer", "string"], "description": "Featured image. Pass a numeric media id (resolved to its media path automatically), the relative media path (e.g. 'odishatv/media/media_files/foo.jpg'), or a full CDN URL. Stored as the relative path the dashboard's featured-image widget reads."},
                 "banner_description":  {"type": "string",  "description": "Featured image caption"},
                 "short_description":   {"type": "string",  "description": "SEO meta description"},
                 "summary":             {"type": "string",  "description": "Post summary"},
@@ -329,6 +344,11 @@ class CmsPostsTools(CmsToolModule):
             if err is not None:
                 return err
             payload["content"] = content_str
+
+        # Featured image: store as the relative media path the dashboard's featured-image
+        # widget reads (a bare media id renders publicly but stays blank in the editor).
+        if payload.get("banner_url") is not None:
+            payload["banner_url"] = _resolve_banner_url(credentials, payload["banner_url"])
 
         if post_type == "Video" and not (payload.get("meta_data") or {}).get("meta_video_embed"):
             return {
@@ -483,7 +503,7 @@ class CmsPostsTools(CmsToolModule):
                 "contributors":        {"type": "string",  "description": "Comma-separated author IDs"},
                 "tags":                {"type": "string",  "description": "Comma-separated tag IDs"},
                 "categories":          {"type": "string",  "description": "Comma-separated category IDs"},
-                "banner_url":          {"type": "integer", "description": "New media ID for featured image"},
+                "banner_url":          {"type": ["integer", "string"], "description": "New featured image. Pass a numeric media id (resolved to its media path automatically), the relative media path, or a full CDN URL. Stored as the relative path the dashboard's featured-image widget reads."},
                 "short_description":   {"type": "string",  "description": "New SEO meta description"},
                 "hide_banner_image":   {"type": "boolean", "description": "Hide the featured image"},
                 "custom_published_at": {"type": "string",  "description": "Backdated publish timestamp ISO 8601"},
@@ -508,6 +528,10 @@ class CmsPostsTools(CmsToolModule):
             if err is not None:
                 return err
             changes["content"] = content_str
+
+        # Featured image: store as the relative media path the dashboard widget reads.
+        if changes.get("banner_url") is not None:
+            changes["banner_url"] = _resolve_banner_url(credentials, changes["banner_url"])
 
         _coerce_post_int_fields(changes)
         _strip_list_brackets(changes)
