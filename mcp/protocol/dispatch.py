@@ -180,7 +180,15 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
 
     # Tag the New Relic transaction with the tool name up front, so the attribute
     # is present even when the call fails validation or raises before completion.
+    # Also rename the transaction from the generic Django route ("POST /mcp") to the
+    # tool itself, so each tool shows as its own entry in the APM Transactions list
+    # (e.g. "MCP/create_post") instead of every call collapsing under one route.
+    # NOTE: in a JSON-RPC batch this is set per sub-call, so the last tool in the
+    # batch wins for the transaction name; the per-call mcp.tool attribute and NRQL
+    # faceting remain the reliable per-tool signal.
     newrelic.agent.add_custom_attribute("mcp.tool", name)
+    if name:
+        newrelic.agent.set_transaction_name(name, group="MCP")
 
     logger.info(
         "MCP tools/call: tool=%s session=%s args_count=%d",

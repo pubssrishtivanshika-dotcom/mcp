@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from mcp.clients.cms import cms_client
 from mcp.tool_registry import PAGINATION_PROPERTIES, tool
 
@@ -5,6 +7,30 @@ from mcp.cms.helpers import CmsToolModule, preview_create_op, preview_update_op
 
 _BASE = "/media-library/"
 _path_for = (_BASE + "{}/").format
+
+
+def _path_upload_warning(path):
+    """Return (warning, clean_path) when `path` is likely to break the backend's
+    S3 upload, else (None, None).
+
+    The CMS derives the S3 object key from the media URL. A query string gets
+    folded into the key (and breaks content-type/extension inference), which
+    surfaces as the opaque 'Failed to upload file to S3'. `path` is immutable
+    after creation, so this must be caught before the write. A missing file
+    extension is NOT flagged — the backend sniffs the content-type and works fine.
+    """
+    if not isinstance(path, str):
+        return None, None
+    parts = urlsplit(path)
+    if not parts.query:
+        return None, None
+    clean = f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.scheme else parts.path
+    warning = (
+        f"⚠️  The media URL contains a query string (?{parts.query}). The CMS derives the "
+        f"S3 object key from the URL, and the query string corrupts it — this is the cause "
+        f"of 'Failed to upload file to S3'. Retry with the query string stripped:\n    {clean}"
+    )
+    return warning, clean
 
 
 class MediaTools(CmsToolModule):
@@ -70,8 +96,15 @@ class MediaTools(CmsToolModule):
         # The media-library endpoint rejects application/json — send multipart/form-data.
         dry_run = args.get("dry_run", True)
         payload = {k: v for k, v in args.items() if k != "dry_run"}
+        warning, clean = _path_upload_warning(payload.get("path", ""))
         if dry_run:
-            return {"dry_run": True, "preview": preview_create_op("Media", payload)}
+            preview = preview_create_op("Media", payload)
+            if warning:
+                preview += "\n\n" + warning
+            return {"dry_run": True, "preview": preview}
+        if warning:
+            # Block the irreversible write rather than emit an opaque S3 failure.
+            return {"error_type": "bad_request", "message": warning, "retryable": False}
         return cms_client.post_form(credentials, _BASE, payload)
 
     @tool(
