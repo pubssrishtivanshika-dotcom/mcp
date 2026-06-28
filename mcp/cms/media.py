@@ -2,7 +2,6 @@ from mcp.clients.cms import cms_client
 from mcp.tool_registry import PAGINATION_PROPERTIES, tool
 
 from mcp.cms.helpers import CmsToolModule, preview_create_op, preview_update_op
-from mcp.cms.media_thumbnails import build_rich_media_response, thumbnail_url
 
 _BASE = "/media-library/"
 _path_for = (_BASE + "{}/").format
@@ -20,17 +19,7 @@ class MediaTools(CmsToolModule):
         },
     )
     def list_media_assets(self, credentials: dict, args: dict):
-        raw = cms_client.get(credentials, _BASE, {
-            "page":  args.get("page"),
-            "limit": args.get("limit"),
-        })
-        if isinstance(raw, dict) and raw.get("error_type"):
-            return raw
-        items = raw.get("data", []) if isinstance(raw, dict) else raw
-        if not isinstance(items, list):
-            items = [items]
-        meta = {k: v for k, v in raw.items() if k != "data"} if isinstance(raw, dict) else {}
-        return build_rich_media_response(items, meta)
+        return self.list_resource(credentials, args, path=_BASE)
 
     @tool(
         name="get_media_asset",
@@ -42,12 +31,7 @@ class MediaTools(CmsToolModule):
         },
     )
     def get_media_asset(self, credentials: dict, args: dict):
-        raw = cms_client.get(credentials, _path_for(args["id"]))
-        if isinstance(raw, dict) and raw.get("error_type"):
-            return raw
-        item = raw.get("data", raw) if isinstance(raw, dict) else raw
-        meta = {k: v for k, v in raw.items() if k != "data"} if isinstance(raw, dict) else {}
-        return build_rich_media_response([item], meta)
+        return self.get_resource(credentials, args, path_for=_path_for)
 
     @tool(
         name="register_media_asset",
@@ -122,19 +106,7 @@ class MediaTools(CmsToolModule):
             if isinstance(current, dict) and "error_type" in current:
                 return current
             current_data = current.get("data", current) if isinstance(current, dict) else current
-            # Return rich response so the client renders the current image alongside the diff.
-            return build_rich_media_response(
-                [current_data],
-                meta={
-                    "dry_run":         True,
-                    "pending_changes": changes,
-                    "diff":            preview_update_op("Media", item_id, current_data, changes),
-                    "edit_hint": (
-                        "Image shown above is the current asset. "
-                        "Call update_media_asset again with dry_run=false to apply the pending changes."
-                    ),
-                },
-            )
+            return {"dry_run": True, "preview": preview_update_op("Media", item_id, current_data, changes)}
         return cms_client.patch_form(credentials, path, changes)
 
     @tool(

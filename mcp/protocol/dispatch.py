@@ -5,7 +5,6 @@ import time
 
 import newrelic.agent
 from django.conf import settings
-from mcp.cms.media_thumbnails import fetch_thumbnails
 
 from mcp.cds import TOOLS, dispatch_cds_tool
 from mcp.cms import CMS_TOOL_NAMES, CMS_TOOLS, dispatch_cms_tool
@@ -95,37 +94,6 @@ _UNIMPLEMENTED_METHODS: frozenset[str] = frozenset({
     "completion/complete",
     "logging/setLevel",
 })
-
-
-def _build_content(result) -> list[dict]:
-    """Build the MCP content array.
-
-    Rich results (marked with _mcp_rich=True by media tools) get inline image
-    blocks fetched in parallel, each followed by a one-line text caption.
-    Everything else falls back to a single JSON text block.
-    """
-    if not isinstance(result, dict) or not result.get("_mcp_rich"):
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
-
-    items = fetch_thumbnails(result.get("items", []))
-    blocks = []
-
-    for item in items:
-        if item.get("_b64") and item.get("_mime"):
-            blocks.append({"type": "image", "data": item["_b64"], "mimeType": item["_mime"]})
-
-        parts = [f"id: {item['id']}", item.get("filename") or ""]
-        if item.get("alt_text"):
-            parts.append(item["alt_text"])
-        if item.get("type") and item["type"] != "Image":
-            parts.append(f"[{item['type']}]")
-        blocks.append({"type": "text", "text": " | ".join(p for p in parts if p)})
-
-    meta = result.get("meta")
-    if meta:
-        blocks.append({"type": "text", "text": json.dumps(meta, indent=2)})
-
-    return blocks or [{"type": "text", "text": json.dumps(result, indent=2)}]
 
 
 def jsonrpc_ok(id_, result: dict) -> dict:
@@ -243,10 +211,13 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
         newrelic.agent.add_custom_attribute("mcp.status", "degraded" if degraded_reason else "success")
 
         if result in (None, "", [], {}, ()):
-            result = {"status": "no_data", "message": "The tool returned no data for this request."}
-
-        content     = _build_content(result)
-        result_size = sum(len(b.get("text", "") or b.get("data", "")) for b in content)
+            output_text = json.dumps({
+                "status": "no_data",
+                "message": "The tool returned no data for this request.",
+            })
+        else:
+            output_text = json.dumps(result, indent=2)
+        result_size = len(output_text)
 
         if degraded_reason:
             logger.warning("MCP tools/call degraded: tool=%s reason=%s duration_ms=%.2f", name, degraded_reason, duration_ms)
@@ -255,7 +226,7 @@ def _handle_tool_call(body: dict, credentials: dict, request, session_id, id_) -
 
         # Surface upstream errors/degraded results to the client model via the MCP
         # isError flag so it treats them as failures, not as data to reason over.
-        response = {"content": content}
+        response = {"content": [{"type": "text", "text": output_text}]}
         if degraded_reason:
             response["isError"] = True
         return jsonrpc_ok(id_, response)
