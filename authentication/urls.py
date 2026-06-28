@@ -27,8 +27,4 @@ urlpatterns = [
     path("auth/success", views.AuthSuccessView.as_view(), name="auth_success"),
     path("auth/status", views.AuthStatusView.as_view(), name="auth_status"),
     path("auth/logout", views.AuthLogoutView.as_view(), name="auth_logout"),
-
-    # Browser media gallery (session-authenticated)
-    path("media", views.MediaGalleryView.as_view(), name="media_gallery"),
-    path("media/assets", views.MediaAssetsView.as_view(), name="media_assets"),
 ]

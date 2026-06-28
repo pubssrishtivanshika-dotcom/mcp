@@ -8,7 +8,6 @@ from authentication.views.discovery import (
     OAuthProtectedResourceView,
     OAuthServerMetadataView,
 )
-from authentication.views.media import MediaAssetsView, MediaGalleryView
 from authentication.views.registration import OAuthRegisterView
 from authentication.views.revoke import OAuthRevokeView
 from authentication.views.session import (
@@ -34,6 +33,4 @@ __all__ = [
     "AuthSuccessView",
     "AuthStatusView",
     "AuthLogoutView",
-    "MediaGalleryView",
-    "MediaAssetsView",
 ]
