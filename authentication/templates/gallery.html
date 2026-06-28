@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Media Library — Publive MCP{% endblock %}
+
+{% block card_class %}card--wide{% endblock %}
+
+{% block extra_css %}
+  <link rel="preconnect" href="https://img-cdn.publive.online" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" />
+  <link rel="stylesheet" href="{% static 'css/media-gallery.css' %}" />
+{% endblock %}
+
+{% block content %}
+  {% include "_card_header.html" %}
+
+  <h1>Media library</h1>
+  <p class="subtitle">Browse media assets from your Publive CMS. Click any image to open it fullscreen — use the arrows or swipe to move through the gallery.</p>
+
+  <div class="mg-grid" id="mediaGrid"></div>
+
+  <div class="mg-pager" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;">
+    <button class="btn" id="prevPage" style="width:auto;margin-top:0;" disabled>← Prev</button>
+    <span id="pageLabel" style="font-size:13px;color:var(--text-muted);font-weight:600;">Page 1</span>
+    <button class="btn" id="nextPage" style="width:auto;margin-top:0;">Next →</button>
+  </div>
+  <p class="footer-note" id="galleryStatus" style="margin-top:12px;"></p>
+{% endblock %}
+
+{% block extra_js %}
+  <script src="https://cdn.jsdelivr.net/npm/glightbox/dist/js/glightbox.min.js"></script>
+  <script src="{% static 'js/media-gallery.js' %}"></script>
+  <script src="{% static 'js/gallery-page.js' %}"></script>
+{% endblock %}
